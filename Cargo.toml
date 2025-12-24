@@ -1,0 +1,101 @@
+[workspace]
+members = [
+  "crates/pulsing-actor",
+  "crates/pulsing-bench",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+description = "Pulsing - Distributed Actor Framework"
+authors = ["Reiase <reiase@gmail.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/reiase/pulsing"
+keywords = ["actor", "distributed", "async", "inference"]
+
+[workspace.dependencies]
+pulsing-actor = { path = "crates/pulsing-actor" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "net", "rt"] }
+tokio-stream = { version = "0.1" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+bytes = { version = "1" }
+
+# Async utilities
+async-trait = { version = "0.1" }
+async-stream = { version = "0.3" }
+futures = { version = "0.3" }
+
+# Concurrent data structures
+dashmap = { version = "6.1" }
+parking_lot = { version = "0.12" }
+
+# Error handling
+anyhow = { version = "1" }
+thiserror = { version = "2.0" }
+
+# Logging
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = { version = "0.9" }
+
+# HTTP
+axum = { version = "0.8", features = ["macros"] }
+hyper = { version = "1.7" }
+hyper-util = { version = "0.1" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[package]
+name = "pulsing-py"
+version.workspace = true
+edition = "2021"
+authors.workspace = true
+license.workspace = true
+description = "Python bindings for Pulsing Actor System"
+
+[lib]
+path = "bindings/lib.rs"
+name = "_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pulsing-actor = { path = "crates/pulsing-actor" }
+pulsing-bench = { path = "crates/pulsing-bench" }
+
+anyhow = { version = "1" }
+async-trait = { version = "0.1" }
+futures = { version = "0.3" }
+serde = { version = "1" }
+serde_json = { version = "1" }
+thiserror = { version = "2.0" }
+tokio = { version = "1", features = ["full"] }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# PyO3 dependencies
+pyo3 = { version = "0.23.4", default-features = false, features = [
+  "macros",
+  "experimental-async",
+  "experimental-inspect",
+  "extension-module",
+  "py-clone",
+  "abi3-py310",
+] }
+
+pyo3-async-runtimes = { version = "0.23.0", default-features = false, features = [
+  "attributes",
+  "testing",
+  "tokio-runtime",
+  "unstable-streams",
+] }
+
+pythonize = "0.23"

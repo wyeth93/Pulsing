@@ -1,0 +1,77 @@
+[project]
+name = "pulsing"
+version = "0.1.0"
+description = "Pulsing - Distributed Actor Framework"
+readme = "README.md"
+authors = [
+    { name = "Reiase", email = "reiase@gmail.com" }
+]
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.10.6,<=2.11.7",
+    "uvloop>=0.21.0",
+    "aiohttp>=3.9.0",
+    "hyperparameter>=0.5.0",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: POSIX :: Linux",
+]
+keywords = ["actor", "distributed", "async", "llm", "inference"]
+
+[project.urls]
+Homepage = "https://github.com/reiase/pulsing"
+Repository = "https://github.com/reiase/pulsing"
+Documentation = "https://github.com/reiase/pulsing#readme"
+Issues = "https://github.com/reiase/pulsing/issues"
+Changelog = "https://github.com/reiase/pulsing/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.8",
+    "maturin>=1.0",
+]
+
+[project.scripts]
+pulsing = "pulsing.cli.__main__:main"
+
+[tool.maturin]
+module-name = "pulsing._core"
+manifest-path = "Cargo.toml"
+python-packages = ["pulsing"]
+python-source = "python"
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+asyncio_mode = "auto"
+testpaths = ["tests/python"]
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.codespell]
+skip = "*.lock,target/*,*.whl"
+ignore-words-list = "crate"
