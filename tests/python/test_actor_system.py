@@ -10,16 +10,15 @@ Covers:
 
 import asyncio
 import json
-import pytest
 
+import pytest
 from pulsing.actor import (
     Actor,
-    create_actor_system,
-    SystemConfig,
+    ActorId,
     Message,
     StreamMessage,
-    ActorRef,
-    ActorId,
+    SystemConfig,
+    create_actor_system,
 )
 
 # Actor system tests are standalone and don't require NATS/ETCD
@@ -34,7 +33,7 @@ class EchoActor(Actor):
     """Simple echo actor - returns the same message it receives."""
 
     async def receive(self, msg: Message) -> Message:
-        return Message.single(f"Echo:{msg.msg_type}", msg.payload)
+        return Message(f"Echo:{msg.msg_type}", msg.payload)
 
 
 class CounterActor(Actor):
@@ -218,8 +217,9 @@ async def test_spawn_actor(actor_system):
     """Test spawning an actor."""
     actor_ref = await actor_system.spawn("echo", EchoActor())
     assert actor_ref is not None
-    assert actor_ref.actor_id.name == "echo"
+    assert actor_ref.actor_id is not None
     assert actor_ref.is_local()
+    assert "echo" in actor_system.local_actor_names()
 
 
 @pytest.mark.asyncio
@@ -229,7 +229,7 @@ async def test_ask_single_message(actor_system):
 
     # Send message and get response (using send() which supports Message)
     request = Message.from_json("greeting", {"text": "hello"})
-    response = await actor_ref.send(request)
+    response = await actor_ref.ask(request)
 
     assert response.msg_type == "Echo:greeting"
     data = response.to_json()
@@ -238,19 +238,23 @@ async def test_ask_single_message(actor_system):
 
 @pytest.mark.asyncio
 async def test_ask_json(actor_system):
-    """Test ask_json convenience method."""
+    """Test ask with JSON message."""
     actor_ref = await actor_system.spawn("counter", CounterActor())
 
     # Test increment
-    response = await actor_ref.ask_json("increment", {"value": 5})
+    response = (
+        await actor_ref.ask(Message.from_json("increment", {"value": 5}))
+    ).to_json()
     assert response["count"] == 5
 
     # Test get
-    response = await actor_ref.ask_json("get", {})
+    response = (await actor_ref.ask(Message.from_json("get", {}))).to_json()
     assert response["count"] == 5
 
     # Test decrement
-    response = await actor_ref.ask_json("decrement", {"value": 2})
+    response = (
+        await actor_ref.ask(Message.from_json("decrement", {"value": 2}))
+    ).to_json()
     assert response["count"] == 3
 
 
@@ -260,13 +264,13 @@ async def test_tell_message(actor_system):
     actor_ref = await actor_system.spawn("counter", CounterActor())
 
     # Send tell (fire-and-forget)
-    await actor_ref.tell_json("increment", {"value": 10})
+    await actor_ref.tell(Message.from_json("increment", {"value": 10}))
 
     # Small delay to allow processing
     await asyncio.sleep(0.1)
 
     # Verify with ask
-    response = await actor_ref.ask_json("get", {})
+    response = (await actor_ref.ask(Message.from_json("get", {}))).to_json()
     assert response["count"] == 10
 
 
@@ -277,7 +281,7 @@ async def test_actor_lifecycle(actor_system):
     actor_ref = await actor_system.spawn("lifecycle_test", actor)
 
     # Do some work
-    await actor_ref.ask_json("increment", {"value": 1})
+    await actor_ref.ask(Message.from_json("increment", {"value": 1}))
 
     # Stop the actor
     await actor_system.stop("lifecycle_test")
@@ -301,9 +305,9 @@ async def test_multiple_actors(actor_system):
     assert "counter" in local_actors
 
     # Interact with each
-    resp1 = await echo1.send(Message.from_json("test1", {}))
-    resp2 = await echo2.send(Message.from_json("test2", {}))
-    resp3 = await counter.ask_json("get", {})
+    resp1 = await echo1.ask(Message.from_json("test1", {}))
+    resp2 = await echo2.ask(Message.from_json("test2", {}))
+    resp3 = (await counter.ask(Message.from_json("get", {}))).to_json()
 
     assert resp1.msg_type == "Echo:test1"
     assert resp2.msg_type == "Echo:test2"
@@ -316,11 +320,11 @@ async def test_actor_metadata(actor_system):
     actor_ref = await actor_system.spawn("counter_meta", CounterActor())
 
     # Increment counter
-    await actor_ref.ask_json("increment", {"value": 42})
+    await actor_ref.ask(Message.from_json("increment", {"value": 42}))
 
     # Note: metadata is typically accessed via system diagnostics
     # For now, just verify the actor works correctly
-    response = await actor_ref.ask_json("get", {})
+    response = (await actor_ref.ask(Message.from_json("get", {}))).to_json()
     assert response["count"] == 42
 
 
@@ -336,7 +340,7 @@ async def test_streaming_response_basic(actor_system):
 
     # Request streaming response
     request = Message.from_json("generate", {"count": 5, "delay": 0.01})
-    response = await actor_ref.send(request)
+    response = await actor_ref.ask(request)
 
     # Verify it's a stream
     assert response.is_stream
@@ -356,13 +360,14 @@ async def test_streaming_response_basic(actor_system):
 
 
 @pytest.mark.asyncio
-async def test_streaming_response_with_ask_stream(actor_system):
-    """Test ask_stream method for streaming responses."""
+async def test_streaming_response_with_stream_reader(actor_system):
+    """Test streaming response with stream_reader method."""
     actor_ref = await actor_system.spawn("generator", StreamingGeneratorActor())
 
-    # Use ask_stream directly
+    # Use ask + stream_reader
     request = Message.from_json("generate", {"count": 3})
-    reader = await actor_ref.ask_stream(request)
+    response = await actor_ref.ask(request)
+    reader = response.stream_reader()
 
     items = []
     async for chunk in reader:
@@ -378,11 +383,11 @@ async def test_streaming_response_large(actor_system):
     actor_ref = await actor_system.spawn("generator", StreamingGeneratorActor())
 
     request = Message.from_json("generate", {"count": 100, "delay": 0.001})
-    response = await actor_ref.send(request)
+    response = await actor_ref.ask(request)
 
     reader = response.stream_reader()
     count = 0
-    async for chunk in reader:
+    async for _chunk in reader:
         count += 1
 
     assert count == 100
@@ -394,7 +399,7 @@ async def test_streaming_response_with_error(actor_system):
     actor_ref = await actor_system.spawn("generator", StreamingGeneratorActor())
 
     request = Message.from_json("generate_with_error", {})
-    response = await actor_ref.send(request)
+    response = await actor_ref.ask(request)
 
     reader = response.stream_reader()
     items = []
@@ -420,12 +425,12 @@ async def test_streaming_response_cancel(actor_system):
 
     # Request a long stream
     request = Message.from_json("generate", {"count": 1000, "delay": 0.1})
-    response = await actor_ref.send(request)
+    response = await actor_ref.ask(request)
 
     reader = response.stream_reader()
     count = 0
 
-    async for chunk in reader:
+    async for _chunk in reader:
         count += 1
         if count >= 3:
             await reader.cancel()
@@ -447,7 +452,7 @@ async def test_streaming_request_basic(actor_system):
 
     # For now, test with single message (stream input requires client-side streaming)
     request = Message.from_json("test", {"data": "hello"})
-    response = await actor_ref.send(request)
+    response = await actor_ref.ask(request)
 
     # Should receive echo response for non-stream
     assert not response.is_stream
@@ -498,7 +503,7 @@ async def test_remote_actor_communication(cluster_systems):
 
     # Send message to remote actor
     request = Message.from_json("remote_test", {"from": "system2"})
-    response = await remote_ref.send(request)
+    response = await remote_ref.ask(request)
 
     # Note: Remote responses don't preserve msg_type in current protocol
     # The HTTP transport only returns payload bytes
@@ -507,13 +512,14 @@ async def test_remote_actor_communication(cluster_systems):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(reason="Remote streaming not yet implemented in HTTP transport")
 async def test_remote_streaming_response(cluster_systems):
     """Test streaming response from remote actor."""
     system1, system2 = cluster_systems
 
     # Spawn streaming actor on system1
-    actor_ref1 = await system1.spawn("remote_generator", StreamingGeneratorActor(), public=True)
+    actor_ref1 = await system1.spawn(
+        "remote_generator", StreamingGeneratorActor(), public=True
+    )
 
     # Wait for propagation
     await asyncio.sleep(1.0)
@@ -523,7 +529,7 @@ async def test_remote_streaming_response(cluster_systems):
 
     # Request streaming response
     request = Message.from_json("generate", {"count": 5})
-    response = await remote_ref.send(request)
+    response = await remote_ref.ask(request)
 
     assert response.is_stream
 
@@ -544,9 +550,10 @@ async def test_remote_streaming_response(cluster_systems):
 @pytest.mark.asyncio
 async def test_actor_not_found(actor_system):
     """Test error when actor is not found."""
-    fake_id = ActorId("nonexistent", actor_system.node_id)
+    # Create a fake ActorId with a random local_id that doesn't exist
+    fake_id = ActorId(99999999, actor_system.node_id)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         await actor_system.actor_ref(fake_id)
 
 
@@ -559,8 +566,8 @@ async def test_message_to_stopped_actor(actor_system):
     await actor_system.stop("temp_actor")
 
     # Try to send message - should fail
-    with pytest.raises(Exception):
-        await actor_ref.send(Message.from_json("test", {}))
+    with pytest.raises(Exception):  # noqa: B017
+        await actor_ref.ask(Message.from_json("test", {}))
 
 
 # ============================================================================
@@ -576,13 +583,13 @@ async def test_high_throughput_messages(actor_system):
     # Send many increments
     num_messages = 100
     tasks = []
-    for i in range(num_messages):
-        tasks.append(actor_ref.ask_json("increment", {"value": 1}))
+    for _i in range(num_messages):
+        tasks.append(actor_ref.ask(Message.from_json("increment", {"value": 1})))
 
     await asyncio.gather(*tasks)
 
     # Verify final count
-    response = await actor_ref.ask_json("get", {})
+    response = (await actor_ref.ask(Message.from_json("get", {}))).to_json()
     assert response["count"] == num_messages
 
 
@@ -593,10 +600,10 @@ async def test_concurrent_streaming(actor_system):
 
     async def consume_stream(stream_id: int):
         request = Message.from_json("generate", {"count": 10, "delay": 0.01})
-        response = await actor_ref.send(request)
+        response = await actor_ref.ask(request)
         reader = response.stream_reader()
         count = 0
-        async for chunk in reader:
+        async for _chunk in reader:
             count += 1
         return stream_id, count
 
@@ -611,4 +618,3 @@ async def test_concurrent_streaming(actor_system):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

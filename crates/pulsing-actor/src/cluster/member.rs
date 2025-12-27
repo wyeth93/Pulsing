@@ -6,6 +6,90 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::time::Instant;
 
+// ============================================================================
+// New Gossip Protocol (Redis Cluster style)
+// ============================================================================
+
+/// Node status in the new gossip protocol (Redis Cluster style)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum NodeStatus {
+    /// Node is online and healthy
+    Online = 0,
+    /// Node is possibly failed (local detection, not confirmed)
+    PFail = 1,
+    /// Node is confirmed failed (majority of nodes agree)
+    Fail = 2,
+    /// Node is in handshake (new node joining)
+    Handshake = 3,
+}
+
+impl NodeStatus {
+    pub fn is_online(&self) -> bool {
+        matches!(self, Self::Online)
+    }
+
+    pub fn is_failed(&self) -> bool {
+        matches!(self, Self::PFail | Self::Fail)
+    }
+}
+
+/// Cluster node information (new format)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClusterNode {
+    /// Node identifier
+    pub node_id: NodeId,
+    /// Network address
+    pub addr: SocketAddr,
+    /// Current status
+    pub status: NodeStatus,
+    /// Configuration epoch (for conflict resolution)
+    pub epoch: u64,
+    /// Last seen timestamp (milliseconds since epoch)
+    pub last_seen: u64,
+}
+
+impl ClusterNode {
+    pub fn new(node_id: NodeId, addr: SocketAddr, epoch: u64) -> Self {
+        Self {
+            node_id,
+            addr,
+            status: NodeStatus::Online,
+            epoch,
+            last_seen: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        }
+    }
+
+    /// Check if this node info supersedes another (based on epoch)
+    pub fn supersedes(&self, other: &ClusterNode) -> bool {
+        // Higher epoch always wins
+        if self.epoch != other.epoch {
+            return self.epoch > other.epoch;
+        }
+        // Same epoch: Fail > PFail > Online
+        self.status > other.status
+    }
+}
+
+/// Failure information to propagate via gossip
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FailureInfo {
+    /// Node that failed
+    pub node_id: NodeId,
+    /// Failure status (PFail or Fail)
+    pub status: NodeStatus,
+    /// Epoch when failure was detected
+    pub epoch: u64,
+    /// Node that reported the failure
+    pub reported_by: NodeId,
+}
+
+// ============================================================================
+// Legacy types (kept for backward compatibility)
+// ============================================================================
+
 /// Member status in the cluster
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberStatus {
@@ -117,7 +201,7 @@ impl std::hash::Hash for MemberInfo {
 }
 
 /// Actor location in the cluster (legacy, for backward compatibility)
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ActorLocation {
     /// Actor identifier
     pub actor_id: ActorId,
@@ -206,7 +290,7 @@ impl NamedActorInfo {
     /// Merge with another NamedActorInfo (union of instances)
     pub fn merge(&mut self, other: &NamedActorInfo) {
         for node_id in &other.instances {
-            self.instances.insert(node_id.clone());
+            self.instances.insert(*node_id);
         }
         self.version = self.version.max(other.version) + 1;
     }
@@ -228,8 +312,8 @@ mod tests {
         let node_id = NodeId::generate();
         let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
 
-        let mut m1 = MemberInfo::new(node_id.clone(), addr, addr);
-        let mut m2 = MemberInfo::new(node_id.clone(), addr, addr);
+        let mut m1 = MemberInfo::new(node_id, addr, addr);
+        let mut m2 = MemberInfo::new(node_id, addr, addr);
 
         // Same incarnation, same status - neither supersedes
         assert!(!m1.supersedes(&m2));

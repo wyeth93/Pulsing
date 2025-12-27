@@ -109,7 +109,7 @@ Profiles are presets to benchmark for different model use cases. Available profi
   The model is prompted with the whole conversation history at each turn. Prefix caching will have a significant impact
   on the performance of this benchmark.
 - `code-generation`
-  Simulates code-complete scenarios. Model is given large code snippets and asked to complete them with a few tokens 
+  Simulates code-complete scenarios. Model is given large code snippets and asked to complete them with a few tokens
   (e.g. a function name, a few code lines).
 - `classification`
   Simulates cases where the model is fed with large chunks of business data or document repeatedly and users
@@ -132,7 +132,7 @@ Available modes:
 
 Example running a benchmark at a fixed request rates:
 
-```shell 
+```shell
 inference-benchmarker \
     --tokenizer-name "meta-llama/Llama-3.1-8B-Instruct" \
     --max-vus 800 \
@@ -252,7 +252,7 @@ $ make build
   iterations. **Constant arrival rate** is an open-loop model more representative of real-life workloads.
 
 
-* **Why do I get high error rate when running `thoughput` benchmark?**
+* **Why do I get high error rate when running `throughput` benchmark?**
 
   Throughput bench tries to saturate the server with a high request rate. The error rate is high because the server is
   not able to handle the request rate or rate limiting the requests.
@@ -272,4 +272,3 @@ $ make build
   generates an end-of-sequence token before reaching `max_tokens`, the generation will stop.
   There is currently no way to guarantee a fixed number of tokens generated without modifying the inference server.
   So you may have `(successful requests) * max_tokens < generated tokens`.
-

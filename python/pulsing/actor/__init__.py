@@ -10,18 +10,17 @@ Provides:
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Union
 
 from pulsing._core import (
-    ActorSystem,
-    NodeId,
     ActorId,
     ActorRef,
-    SystemConfig,
+    ActorSystem,
+    Message,
+    NodeId,
+    StreamMessage,
     StreamReader,
     StreamWriter,
-    StreamMessage,
-    Message,
+    SystemConfig,
 )
 
 from . import helpers
@@ -70,20 +69,20 @@ async def create_actor_system(config: SystemConfig) -> ActorSystem:
 class Actor(ABC):
     """Base class for Python actors. Implement `receive` to handle messages."""
 
-    def on_start(self, actor_id: ActorId) -> None:
-        """Called when actor starts"""
+    def on_start(self, actor_id: ActorId) -> None:  # noqa: B027
+        """Called when actor starts. Override to handle actor startup."""
         pass
 
-    def on_stop(self) -> None:
-        """Called when actor stops"""
+    def on_stop(self) -> None:  # noqa: B027
+        """Called when actor stops. Override to handle actor cleanup."""
         pass
 
-    def metadata(self) -> Dict[str, str]:
+    def metadata(self) -> dict[str, str]:
         """Return actor metadata for diagnostics"""
         return {}
 
     @abstractmethod
-    async def receive(self, msg: Message) -> Optional[Union[Message, StreamMessage]]:
+    async def receive(self, msg: Message) -> Message | StreamMessage | None:
         """
         Handle incoming message
 
@@ -103,4 +102,3 @@ class Actor(ABC):
                 return None
         """
         pass
-

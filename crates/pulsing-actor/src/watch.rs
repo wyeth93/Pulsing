@@ -5,7 +5,7 @@
 //! - Termination handling (logging, cleanup, notification)
 //! - Cluster broadcast for named actor failures
 
-use crate::actor::{ActorId, ActorPath, Envelope, Message, StopReason, Terminated};
+use crate::actor::{ActorId, ActorPath, Envelope, Message, StopReason};
 use crate::cluster::GossipCluster;
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
@@ -85,6 +85,7 @@ impl ActorLifecycle {
     /// * `named_actor_paths` - Routing table to clean up
     /// * `cluster` - Cluster reference for broadcasting
     /// * `get_sender` - Function to get sender for notifying watchers
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_termination<F>(
         &self,
         actor_id: &ActorId,
@@ -194,21 +195,18 @@ impl ActorLifecycle {
             "Notifying watchers of actor termination"
         );
 
-        // Create Terminated message
-        let terminated = Terminated {
-            actor_id: actor_id.clone(),
-            reason,
-        };
+        // Create termination message with actor_id and reason
+        let termination_msg = (*actor_id, reason.clone());
 
-        let msg = match Message::pack(&terminated) {
+        let msg = match Message::pack(&termination_msg) {
             Ok(msg) => msg,
             Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize Terminated message");
+                tracing::error!(error = %e, "Failed to serialize termination message");
                 return;
             }
         };
 
-        // Get payload bytes (Terminated is always single message)
+        // Get payload bytes (termination message is always single message)
         let (msg_type, payload_bytes) = match msg {
             Message::Single { msg_type, data } => (msg_type, data),
             Message::Stream { msg_type, .. } => (msg_type, Vec::new()),
@@ -217,12 +215,12 @@ impl ActorLifecycle {
         // Send to all watchers
         for watcher_name in watcher_names {
             if let Some(sender) = get_sender(&watcher_name) {
-                let envelope = Envelope::tell(msg_type.clone(), payload_bytes.clone());
+                let envelope = Envelope::tell(Message::single(&msg_type, payload_bytes.clone()));
                 if let Err(e) = sender.try_send(envelope) {
                     tracing::warn!(
                         watcher = watcher_name,
                         error = %e,
-                        "Failed to send Terminated message to watcher"
+                        "Failed to send termination message to watcher"
                     );
                 }
             }
@@ -358,7 +356,7 @@ mod tests {
         lifecycle.watch("watcher1", "target1").await;
         lifecycle.watch("watcher2", "target1").await;
 
-        let actor_id = ActorId::new(NodeId::generate(), "target1");
+        let actor_id = ActorId::new(NodeId::generate(), 1);
 
         // Create a channel to receive notifications
         let (tx, mut rx) = mpsc::channel::<Envelope>(10);

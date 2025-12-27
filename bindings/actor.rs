@@ -9,8 +9,8 @@ use pyo3::types::PyBytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::python_executor::python_executor;
 
@@ -35,10 +35,26 @@ impl PyNodeId {
     }
 
     #[new]
-    fn new(id: String) -> Self {
+    fn new(id: u64) -> Self {
         Self {
             inner: NodeId::new(id),
         }
+    }
+
+    #[staticmethod]
+    fn local() -> Self {
+        Self {
+            inner: NodeId::LOCAL,
+        }
+    }
+
+    #[getter]
+    fn id(&self) -> u64 {
+        self.inner.0
+    }
+
+    fn is_local(&self) -> bool {
+        self.inner.is_local()
     }
 
     fn __str__(&self) -> String {
@@ -46,7 +62,7 @@ impl PyNodeId {
     }
 
     fn __repr__(&self) -> String {
-        format!("NodeId('{}')", self.inner)
+        format!("NodeId({})", self.inner.0)
     }
 }
 
@@ -60,31 +76,31 @@ pub struct PyActorId {
 #[pymethods]
 impl PyActorId {
     #[new]
-    #[pyo3(signature = (name, node=None))]
-    fn new(name: String, node: Option<PyNodeId>) -> Self {
+    #[pyo3(signature = (local_id, node=None))]
+    fn new(local_id: u64, node: Option<PyNodeId>) -> Self {
         let inner = match node {
-            Some(n) => ActorId::new(n.inner, name),
-            None => ActorId::local(name),
+            Some(n) => ActorId::new(n.inner, local_id),
+            None => ActorId::local(local_id),
         };
         Self { inner }
     }
 
     #[staticmethod]
-    fn local(name: String) -> Self {
+    fn local(local_id: u64) -> Self {
         Self {
-            inner: ActorId::local(name),
+            inner: ActorId::local(local_id),
         }
     }
 
     #[getter]
-    fn name(&self) -> String {
-        self.inner.name.clone()
+    fn local_id(&self) -> u64 {
+        self.inner.local_id()
     }
 
     #[getter]
     fn node(&self) -> PyNodeId {
         PyNodeId {
-            inner: self.inner.node.clone(),
+            inner: self.inner.node(),
         }
     }
 
@@ -94,8 +110,9 @@ impl PyActorId {
 
     fn __repr__(&self) -> String {
         format!(
-            "ActorId(name='{}', node='{}')",
-            self.inner.name, self.inner.node
+            "ActorId(local_id={}, node={})",
+            self.inner.local_id(),
+            self.inner.node()
         )
     }
 
@@ -243,11 +260,6 @@ impl PyMessage {
             },
         }
     }
-
-    /// Legacy: Create from single message only
-    fn from_single(msg: Message) -> Self {
-        Self::from_rust_message(msg)
-    }
 }
 
 // ============================================================================
@@ -261,6 +273,7 @@ pub struct PyStreamReader {
 }
 
 impl PyStreamReader {
+    #[allow(dead_code)]
     fn new(stream: PayloadStream) -> Self {
         Self {
             stream: Arc::new(TokioMutex::new(Some(stream))),
@@ -344,6 +357,7 @@ impl PyStreamReader {
 /// Stream writer for producing streaming responses.
 #[pyclass(name = "StreamWriter")]
 pub struct PyStreamWriter {
+    #[allow(clippy::type_complexity)]
     sender: Arc<TokioMutex<Option<mpsc::Sender<anyhow::Result<Vec<u8>>>>>>,
 }
 
@@ -420,6 +434,7 @@ impl PyStreamWriter {
 #[pyclass(name = "StreamMessage")]
 pub struct PyStreamMessage {
     msg_type: String,
+    #[allow(clippy::type_complexity)]
     receiver: Arc<StdMutex<Option<mpsc::Receiver<anyhow::Result<Vec<u8>>>>>>,
 }
 
@@ -469,7 +484,7 @@ impl PyActorRef {
     #[getter]
     fn actor_id(&self) -> PyActorId {
         PyActorId {
-            inner: self.inner.id().clone(),
+            inner: *self.inner.id(),
         }
     }
 
@@ -477,63 +492,14 @@ impl PyActorRef {
         self.inner.is_local()
     }
 
+    /// Send a message and wait for response (supports both single and stream responses)
+    ///
+    /// Returns a Message that can be either:
+    /// - Single response: use `msg.payload` or `msg.to_json()`
+    /// - Stream response: use `msg.is_stream` to check, then `msg.stream_reader()` to consume
     fn ask<'py>(&self, py: Python<'py>, msg: PyMessage) -> PyResult<Bound<'py, PyAny>> {
         let actor_ref = self.inner.clone();
         let actor_msg = msg.to_message();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = actor_ref.send(actor_msg).await.map_err(to_pyerr)?;
-            Ok(PyMessage::from_single(response))
-        })
-    }
-
-    #[pyo3(signature = (msg_type, data))]
-    fn ask_json<'py>(
-        &self,
-        py: Python<'py>,
-        msg_type: String,
-        data: PyObject,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let json_value: serde_json::Value = pythonize::depythonize(&data.into_bound(py))?;
-        let payload = serde_json::to_vec(&json_value).map_err(to_pyerr)?;
-        let actor_ref = self.inner.clone();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let actor_msg = Message::single(&msg_type, payload);
-            let response = actor_ref.send(actor_msg).await.map_err(to_pyerr)?;
-
-            Python::with_gil(|py| -> PyResult<PyObject> {
-                let py_msg = PyMessage::from_single(response);
-                let payload = py_msg.payload.as_deref().unwrap_or(&[]);
-                let value: serde_json::Value =
-                    serde_json::from_slice(payload).map_err(to_pyerr)?;
-                let pyobj = pythonize::pythonize(py, &value)?;
-                Ok(pyobj.into())
-            })
-        })
-    }
-
-    fn tell<'py>(&self, py: Python<'py>, msg: PyMessage) -> PyResult<Bound<'py, PyAny>> {
-        let actor_ref = self.inner.clone();
-        let actor_msg = msg.to_message();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            actor_ref.fire(actor_msg).await.map_err(to_pyerr)?;
-            Ok(())
-        })
-    }
-
-    /// Send a message and get a unified response
-    fn send<'py>(&self, py: Python<'py>, msg: &PyMessage) -> PyResult<Bound<'py, PyAny>> {
-        let actor_ref = self.inner.clone();
-
-        let actor_msg = if let Some(ref data) = msg.payload {
-            Message::single(&msg.msg_type, data.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "Cannot send stream message as request (stream input not yet supported)",
-            ));
-        };
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let response = actor_ref.send(actor_msg).await.map_err(to_pyerr)?;
@@ -541,43 +507,13 @@ impl PyActorRef {
         })
     }
 
-    /// Send a message and expect a streaming response
-    fn ask_stream<'py>(&self, py: Python<'py>, msg: &PyMessage) -> PyResult<Bound<'py, PyAny>> {
+    /// Send a message without waiting for response (fire-and-forget)
+    fn tell<'py>(&self, py: Python<'py>, msg: PyMessage) -> PyResult<Bound<'py, PyAny>> {
         let actor_ref = self.inner.clone();
-
-        let actor_msg = if let Some(ref data) = msg.payload {
-            Message::single(&msg.msg_type, data.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "Cannot send stream message as request (stream input not yet supported)",
-            ));
-        };
+        let actor_msg = msg.to_message();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let response = actor_ref.send_stream(actor_msg).await.map_err(to_pyerr)?;
-            match response {
-                Message::Stream { stream, .. } => Ok(PyStreamReader::new(stream)),
-                Message::Single { .. } => Err(PyValueError::new_err(
-                    "Expected stream response but got single message",
-                )),
-            }
-        })
-    }
-
-    #[pyo3(signature = (msg_type, data))]
-    fn tell_json<'py>(
-        &self,
-        py: Python<'py>,
-        msg_type: String,
-        data: PyObject,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let json_value: serde_json::Value = pythonize::depythonize(&data.into_bound(py))?;
-        let payload = serde_json::to_vec(&json_value).map_err(to_pyerr)?;
-        let actor_ref = self.inner.clone();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let actor_msg = Message::single(&msg_type, payload);
-            actor_ref.fire(actor_msg).await.map_err(to_pyerr)?;
+            actor_ref.send_oneway(actor_msg).await.map_err(to_pyerr)?;
             Ok(())
         })
     }
@@ -671,7 +607,7 @@ impl Actor for PythonActorWrapper {
 
     async fn on_start(&mut self, ctx: &mut ActorContext) -> anyhow::Result<()> {
         let handler = Python::with_gil(|py| self.handler.clone_ref(py));
-        let actor_id = ctx.id().clone();
+        let actor_id = *ctx.id();
 
         python_executor()
             .execute(move || {
@@ -706,9 +642,8 @@ impl Actor for PythonActorWrapper {
     }
 
     async fn receive(&mut self, msg: Message, _ctx: &mut ActorContext) -> anyhow::Result<Message> {
-        let (handler, event_loop) = Python::with_gil(|py| {
-            (self.handler.clone_ref(py), self.event_loop.clone_ref(py))
-        });
+        let (handler, event_loop) =
+            Python::with_gil(|py| (self.handler.clone_ref(py), self.event_loop.clone_ref(py)));
 
         let py_msg = PyMessage::from_rust_message(msg);
 
@@ -783,7 +718,9 @@ impl Actor for PythonActorWrapper {
 
         match response {
             PyActorResponse::Single(msg) => Ok(msg.to_message()),
-            PyActorResponse::StreamChannel(msg_type, rx) => Ok(Message::from_channel(&msg_type, rx)),
+            PyActorResponse::StreamChannel(msg_type, rx) => {
+                Ok(Message::from_channel(&msg_type, rx))
+            }
         }
     }
 }
@@ -803,8 +740,9 @@ impl PyActorSystem {
         config: PySystemConfig,
         event_loop: PyObject,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let config_inner = config.inner;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let system = ActorSystem::new(config.inner).await.map_err(to_pyerr)?;
+            let system = ActorSystem::new(config_inner).await.map_err(to_pyerr)?;
             Ok(PyActorSystem {
                 inner: system,
                 event_loop,
@@ -815,7 +753,7 @@ impl PyActorSystem {
     #[getter]
     fn node_id(&self) -> PyNodeId {
         PyNodeId {
-            inner: self.inner.node_id().clone(),
+            inner: *self.inner.node_id(),
         }
     }
 
@@ -839,7 +777,7 @@ impl PyActorSystem {
             let actor = PythonActorWrapper::new(handler, event_loop);
 
             let actor_ref = if public {
-                let path = ActorPath::new(&format!("actors/{}", name)).map_err(to_pyerr)?;
+                let path = ActorPath::new(format!("actors/{}", name)).map_err(to_pyerr)?;
                 system
                     .spawn_named(path, &name, actor)
                     .await
@@ -894,7 +832,7 @@ impl PyActorSystem {
         let system = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let path = ActorPath::new(&format!("actors/{}", name)).map_err(to_pyerr)?;
+            let path = ActorPath::new(format!("actors/{}", name)).map_err(to_pyerr)?;
             let instances: Vec<pulsing_actor::cluster::MemberInfo> =
                 system.get_named_instances(&path).await;
             let result: Vec<std::collections::HashMap<String, String>> = instances
@@ -911,19 +849,58 @@ impl PyActorSystem {
         })
     }
 
+    /// Get all named actors in the cluster
+    fn all_named_actors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let system = self.inner.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let all_named = system.all_named_actors().await;
+
+            Python::with_gil(|py| -> PyResult<PyObject> {
+                use pythonize::pythonize;
+                let result: Vec<std::collections::HashMap<String, serde_json::Value>> = all_named
+                    .into_iter()
+                    .map(|info| {
+                        let mut map = std::collections::HashMap::new();
+                        map.insert(
+                            "path".to_string(),
+                            serde_json::Value::String(info.path.as_str().to_string()),
+                        );
+                        map.insert(
+                            "instance_count".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(
+                                info.instance_count(),
+                            )),
+                        );
+                        // Convert instances (HashSet<NodeId>) to list of node IDs as strings
+                        let instances: Vec<serde_json::Value> = info
+                            .instances
+                            .iter()
+                            .map(|id| serde_json::Value::String(id.to_string()))
+                            .collect();
+                        map.insert("instances".to_string(), serde_json::Value::Array(instances));
+                        map
+                    })
+                    .collect();
+                let pyobj = pythonize(py, &result)?;
+                Ok(pyobj.into())
+            })
+        })
+    }
+
     /// Resolve a named actor (selects one instance using load balancing)
     #[pyo3(signature = (name, node_id=None))]
     fn resolve_named<'py>(
         &self,
         py: Python<'py>,
         name: String,
-        node_id: Option<String>,
+        node_id: Option<u64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let system = self.inner.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let path = ActorPath::new(&format!("actors/{}", name)).map_err(to_pyerr)?;
-            let node = node_id.as_ref().map(|s| NodeId::new(s.clone()));
+            let path = ActorPath::new(format!("actors/{}", name)).map_err(to_pyerr)?;
+            let node = node_id.map(NodeId::new);
             let actor_ref = system
                 .resolve_named(&path, node.as_ref())
                 .await
@@ -972,4 +949,3 @@ pub fn add_to_module(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add_class::<PyStreamMessage>()?;
     Ok(())
 }
-

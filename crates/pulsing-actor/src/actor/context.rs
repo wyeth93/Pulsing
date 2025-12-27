@@ -37,9 +37,9 @@ pub trait ActorSystemRef: Send + Sync {
     async fn actor_ref(&self, id: &ActorId) -> anyhow::Result<ActorRef>;
 
     /// Get the local node ID
-    fn node_id(&self) -> &NodeId;
+    fn node_id(&self) -> NodeId;
 
-    /// Watch an actor - will receive Terminated message when the watched actor stops
+    /// Watch an actor - will receive a termination message (ActorId, StopReason) when the watched actor stops
     async fn watch(&self, watcher: &ActorId, target: &ActorId) -> anyhow::Result<()>;
 
     /// Stop watching an actor
@@ -64,7 +64,7 @@ impl ActorContext {
         system: Arc<dyn ActorSystemRef>,
         cancel_token: CancellationToken,
     ) -> Self {
-        let node_id = Some(system.node_id().clone());
+        let node_id = Some(system.node_id());
         Self {
             actor_id,
             node_id,
@@ -104,7 +104,7 @@ impl ActorContext {
         // Get from system
         if let Some(ref system) = self.system {
             let r = system.actor_ref(id).await?;
-            self.actor_refs.insert(id.clone(), r.clone());
+            self.actor_refs.insert(*id, r.clone());
             return Ok(r);
         }
 
@@ -117,7 +117,7 @@ impl ActorContext {
         todo!("Scheduling not yet implemented")
     }
 
-    /// Watch another actor - will receive Terminated message when it stops
+    /// Watch another actor - will receive a termination message (ActorId, StopReason) when it stops
     pub async fn watch(&self, target: &ActorId) -> anyhow::Result<()> {
         if let Some(ref system) = self.system {
             system.watch(&self.actor_id, target).await
@@ -142,14 +142,14 @@ mod tests {
 
     #[test]
     fn test_context_creation() {
-        let ctx = ActorContext::new(ActorId::local("test"));
-        assert_eq!(ctx.id().name, "test");
+        let ctx = ActorContext::new(ActorId::local(1));
+        assert_eq!(ctx.id().local_id(), 1);
         assert!(!ctx.is_cancelled());
     }
 
     #[test]
     fn test_context_cancellation() {
-        let ctx = ActorContext::new(ActorId::local("test"));
+        let ctx = ActorContext::new(ActorId::local(1));
         assert!(!ctx.is_cancelled());
         ctx.cancel_token().cancel();
         assert!(ctx.is_cancelled());

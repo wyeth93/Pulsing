@@ -1,6 +1,3 @@
-import sys
-from typing import Optional
-
 import hyperparameter as hp
 import uvloop
 
@@ -9,9 +6,9 @@ import uvloop
 def actor(
     type: str,
     namespace: str = "pulsing",
-    addr: Optional[str] = None,
-    seeds: Optional[str] = None,
-    model: Optional[str] = None,
+    addr: str | None = None,
+    seeds: str | None = None,
+    model: str | None = None,
     model_name: str = "pulsing-model",
     device: str = "cuda",
     max_new_tokens: int = 512,
@@ -99,9 +96,118 @@ def actor(
         )
 
 
+@hp.param("inspect")
+def inspect(seeds: str | None = None):
+    """
+    Inspect the actor system state.
+
+    Args:
+        seeds: Comma-separated list of seed nodes to join the cluster.
+
+    Examples:
+        pulsing inspect --seeds 127.0.0.1:8000
+    """
+    seed_list = []
+    if seeds:
+        seed_list = [s.strip() for s in seeds.split(",") if s.strip()]
+    _inspect_system(seed_list)
+
+
+def _inspect_system(seeds: list):
+    """Inspect the actor system state"""
+    import asyncio
+
+    from pulsing.actor import SystemConfig, create_actor_system
+
+    async def run():
+        if not seeds:
+            print("Error: --seeds is required for 'inspect' command")
+            return
+
+        print(f"Connecting to cluster via seeds: {seeds}...")
+        # If seeds are local, bind to 127.0.0.1 to ensure connectivity
+        if any(s.startswith("127.0.0.1") or s.startswith("localhost") for s in seeds):
+            config = SystemConfig.with_addr("127.0.0.1:0").with_seeds(seeds)
+        else:
+            config = SystemConfig.standalone().with_seeds(seeds)
+        system = await create_actor_system(config)
+
+        # Give some time for discovery
+        await asyncio.sleep(1.5)
+
+        members = await system.members()
+        print(f"\nCluster Status: {len(members)} nodes found")
+        print("=" * 60)
+
+        # Get all named actors automatically
+        all_named_actors = {}
+        try:
+            for info in await system.all_named_actors():
+                path = str(info.get("path", ""))
+                name = path[7:] if path.startswith("actors/") else path
+                if info.get("instance_count", 0) > 0:
+                    try:
+                        instances = await system.get_named_instances(name)
+                        if instances:
+                            all_named_actors[name] = instances
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"  [Warning] Failed to get all named actors: {e}")
+
+        # Group named actors by node
+        node_actors = {}
+        for name, instances in all_named_actors.items():
+            for inst in instances:
+                node_actors.setdefault(str(inst.get("node_id")), []).append(name)
+
+        # Display nodes and their actors
+        for member in members:
+            node_id = str(member.get("node_id"))
+            print(f"\nNode: {node_id} ({member.get('addr')}) [{member.get('status')}]")
+
+            if member.get("status") != "Alive":
+                print("  [Node is not alive]")
+                continue
+
+            actors = node_actors.get(node_id, [])
+            if not actors:
+                print("  [No named actors on this node]")
+                continue
+
+            # Group by base type
+            actor_groups = {}
+            for name in actors:
+                base = name.rsplit("_", 1)[0] if "_" in name else name
+                actor_groups.setdefault(base, []).append(name)
+
+            print(f"  Named Actors ({len(actors)}):")
+            for base, names in sorted(actor_groups.items()):
+                if len(names) == 1:
+                    print(f"    - actors/{names[0]}")
+                else:
+                    print(f"    - actors/{base}_* ({len(names)} instances)")
+                    for name in sorted(names)[:5]:
+                        print(f"        • {name}")
+                    if len(names) > 5:
+                        print(f"        ... and {len(names) - 5} more")
+
+        # Summary
+        if all_named_actors:
+            total = sum(len(instances) for instances in all_named_actors.values())
+            print(
+                f"\nTotal Named Actors: {len(all_named_actors)} types, {total} instances"
+            )
+
+        print("\n" + "=" * 60)
+        await system.shutdown()
+
+    uvloop.run(run())
+
+
 def _start_router_actor(
     namespace: str,
-    addr: Optional[str],
+    addr: str | None,
     seeds: list,
     http_host: str,
     http_port: int,
@@ -166,7 +272,7 @@ def _start_router_actor(
 def _start_transformers_actor(
     model: str,
     namespace: str,
-    addr: Optional[str],
+    addr: str | None,
     seeds: list,
     device: str,
     max_new_tokens: int,
@@ -207,7 +313,7 @@ def _start_transformers_actor(
 def _start_vllm_actor(
     model: str,
     namespace: str,
-    addr: Optional[str],
+    addr: str | None,
     seeds: list,
     max_new_tokens: int,
     role: str = "aggregated",
@@ -241,27 +347,86 @@ def _start_vllm_actor(
 
 
 @hp.param("bench")
-def bench():
+@hp.param("bench")
+def bench(
+    tokenizer_name: str,
+    model_name: str | None = None,
+    max_vus: int = 128,
+    duration: str = "120s",
+    rates: list | None = None,
+    num_rates: int = 10,
+    profile: str | None = None,
+    benchmark_kind: str = "sweep",
+    warmup: str = "30s",
+    url: str = "http://localhost:8000",
+    api_key: str = "",
+    prompt_options: str | None = None,
+    decode_options: str | None = None,
+    dataset: str = "hlarcher/inference-benchmarker",
+    dataset_file: str = "share_gpt_filtered_small.json",
+    extra_meta: str | None = None,
+    run_id: str | None = None,
+):
     """
     Run inference benchmarks.
 
-    This command wraps the pulsing benchmark tool.
-    All arguments after 'bench' are passed to the benchmark runner.
+    This command runs the pulsing benchmark tool with the specified parameters.
+
+    Args:
+        tokenizer_name: The name of the tokenizer to use (required)
+        model_name: The name of the model to use. If not provided, same as tokenizer_name
+        max_vus: Maximum number of virtual users (default: 128)
+        duration: Duration of each benchmark step (default: "120s")
+        rates: List of rates for ConstantArrivalRate benchmark
+        num_rates: Number of rates to sweep (default: 10)
+        profile: Benchmark profile to use
+        benchmark_kind: Kind of benchmark - throughput, sweep, csweep, rate (default: "sweep")
+        warmup: Warmup duration (default: "30s")
+        url: Backend URL (default: "http://localhost:8000")
+        api_key: API key for authentication (default: "")
+        prompt_options: Prompt tokenizer options as "key=value,key2=value2"
+        decode_options: Decode tokenizer options as "key=value,key2=value2"
+        dataset: Hugging Face dataset name (default: "hlarcher/inference-benchmarker")
+        dataset_file: Dataset file name (default: "share_gpt_filtered_small.json")
+        extra_meta: Extra metadata as "key1=value1,key2=value2"
+        run_id: Run identifier for results file
 
     Examples:
-        pulsing bench --help
+        pulsing bench --tokenizer_name gpt2 --url http://localhost:8080
     """
     from pulsing._core import benchmark_main
 
-    cmd_args = []
-    if "bench" in sys.argv:
-        try:
-            idx = sys.argv.index("bench")
-            cmd_args = sys.argv[idx + 1:]
-        except ValueError:
-            pass
+    config = {
+        "tokenizer_name": tokenizer_name,
+        "max_vus": max_vus,
+        "duration": duration,
+        "num_rates": num_rates,
+        "benchmark_kind": benchmark_kind,
+        "warmup": warmup,
+        "url": url,
+        "api_key": api_key,
+        "dataset": dataset,
+        "dataset_file": dataset_file,
+    }
 
-    benchmark_main(["pulsing-bench"] + cmd_args)
+    if model_name is not None:
+        config["model_name"] = model_name
+    if rates is not None:
+        config["rates"] = rates
+    if profile is not None:
+        config["profile"] = profile
+    if prompt_options is not None:
+        config["prompt_options"] = prompt_options
+    if decode_options is not None:
+        config["decode_options"] = decode_options
+    if extra_meta is not None:
+        config["extra_meta"] = extra_meta
+    if run_id is not None:
+        config["run_id"] = run_id
+
+    import uvloop
+
+    uvloop.run(benchmark_main(config))
 
 
 def main():

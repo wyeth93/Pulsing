@@ -31,9 +31,11 @@ impl Default for SwimConfig {
     fn default() -> Self {
         Self {
             ping_interval: Duration::from_millis(500),
-            ping_timeout: Duration::from_millis(200),
+            ping_timeout: Duration::from_secs(2),
             indirect_probes: 3,
-            suspicion_timeout: Duration::from_secs(5),
+            // Increased from 5s to 15s for better tolerance in high-load scenarios
+            // This gives nodes more time to respond before being marked as failed
+            suspicion_timeout: Duration::from_secs(15),
         }
     }
 }
@@ -80,7 +82,7 @@ pub struct SwimDetector {
 impl Clone for SwimDetector {
     fn clone(&self) -> Self {
         Self {
-            local_node: self.local_node.clone(),
+            local_node: self.local_node,
             config: self.config.clone(),
             seq: AtomicU64::new(self.seq.load(Ordering::SeqCst)),
             pending_pings: RwLock::new(HashMap::new()),
@@ -109,7 +111,7 @@ impl SwimDetector {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let ping = SwimMessage::Ping {
             seq,
-            from: self.local_node.clone(),
+            from: self.local_node,
         };
         (seq, ping)
     }
@@ -118,7 +120,7 @@ impl SwimDetector {
     pub fn create_ack(&self, seq: u64) -> SwimMessage {
         SwimMessage::Ack {
             seq,
-            from: self.local_node.clone(),
+            from: self.local_node,
         }
     }
 
@@ -150,7 +152,7 @@ impl SwimDetector {
         let timed_out: Vec<_> = pending
             .iter()
             .filter(|(_, p)| now.duration_since(p.sent_at) > self.config.ping_timeout)
-            .map(|(seq, p)| (*seq, p.target.clone()))
+            .map(|(seq, p)| (*seq, p.target))
             .collect();
 
         for (seq, target) in timed_out {
@@ -170,7 +172,7 @@ mod tests {
     fn test_swim_config_default() {
         let config = SwimConfig::default();
         assert_eq!(config.ping_interval, Duration::from_millis(500));
-        assert_eq!(config.ping_timeout, Duration::from_millis(200));
+        assert_eq!(config.ping_timeout, Duration::from_secs(2));
         assert_eq!(config.indirect_probes, 3);
     }
 

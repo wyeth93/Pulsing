@@ -4,7 +4,6 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Union
 
 from aiohttp import web
 
@@ -14,14 +13,14 @@ from pulsing.actor import ActorSystem, Message
 @dataclass
 class ChatCompletionRequest:
     model: str
-    messages: List[Dict[str, str]]
+    messages: list[dict[str, str]]
     temperature: float = 1.0
     top_p: float = 1.0
     stream: bool = False
-    max_tokens: Optional[int] = None
+    max_tokens: int | None = None
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "ChatCompletionRequest":
+    def from_dict(cls, data: dict) -> "ChatCompletionRequest":
         return cls(
             model=data.get("model", ""),
             messages=data.get("messages", []),
@@ -35,13 +34,13 @@ class ChatCompletionRequest:
 @dataclass
 class CompletionRequest:
     model: str
-    prompt: Union[str, List[str]]
+    prompt: str | list[str]
     max_tokens: int = 16
     temperature: float = 1.0
     stream: bool = False
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "CompletionRequest":
+    def from_dict(cls, data: dict) -> "CompletionRequest":
         return cls(
             model=data.get("model", ""),
             prompt=data.get("prompt", ""),
@@ -79,7 +78,7 @@ class _OpenAIHandler:
                 total_workers = count
         else:
             total_workers = 0
-        
+
         if hasattr(self._scheduler, "get_healthy_worker_count"):
             healthy_workers = await self._scheduler.get_healthy_worker_count()
         elif hasattr(self._scheduler, "get_all_loads"):
@@ -87,7 +86,7 @@ class _OpenAIHandler:
             healthy_workers = len(self._scheduler.get_all_loads())
         else:
             healthy_workers = total_workers
-        
+
         return web.json_response(
             {
                 "status": "healthy" if healthy_workers > 0 else "degraded",
@@ -180,7 +179,7 @@ class _OpenAIHandler:
                 request_id, req.model, prompt, worker_ref, req.max_tokens, is_chat=False
             )
 
-    def _build_chat_prompt(self, messages: List[Dict]) -> str:
+    def _build_chat_prompt(self, messages: list[dict]) -> str:
         parts = [
             f"{msg.get('role', 'user').capitalize()}: {msg.get('content', '')}"
             for msg in messages
@@ -199,9 +198,10 @@ class _OpenAIHandler:
         created = int(time.time())
 
         try:
-            result = await worker_ref.ask_json(
+            msg = Message.from_json(
                 "GenerateRequest", {"prompt": prompt, "max_new_tokens": max_tokens}
             )
+            result = (await worker_ref.ask(msg)).to_json()
             text = result.get("text", "")
             prompt_tokens = result.get("prompt_tokens", 0)
             completion_tokens = result.get("completion_tokens", 0)
@@ -250,7 +250,8 @@ class _OpenAIHandler:
                 "GenerateStreamRequest",
                 {"prompt": prompt, "max_new_tokens": max_tokens},
             )
-            reader = await worker_ref.ask_stream(req_msg)
+            response = await worker_ref.ask(req_msg)
+            reader = response.stream_reader()
 
             async for chunk_bytes in reader:
                 try:
@@ -303,7 +304,7 @@ async def start_router(
     scheduler_class=None,  # 向后兼容
 ) -> web.AppRunner:
     """启动 Router HTTP 服务器，返回 AppRunner
-    
+
     Args:
         system: ActorSystem 实例
         http_host: HTTP 监听地址
@@ -318,23 +319,23 @@ async def start_router(
             - "cache_aware": 缓存感知
         scheduler: 自定义 scheduler 实例 (优先使用)
         scheduler_class: [已废弃] 使用 scheduler 参数代替
-    
+
     Returns:
         AppRunner 实例
     """
     from .load_stream import StreamLoadScheduler
     from .scheduler import (
+        RUST_POLICIES_AVAILABLE,
         RandomScheduler,
         RoundRobinScheduler,
-        RustPowerOfTwoScheduler,
         RustCacheAwareScheduler,
-        RUST_POLICIES_AVAILABLE,
+        RustPowerOfTwoScheduler,
     )
-    
+
     # 向后兼容: scheduler_class -> scheduler
     if scheduler_class is not None and scheduler is None:
         scheduler = scheduler_class(system, worker_name)
-    
+
     # 创建 scheduler
     if scheduler is None:
         scheduler_map = {
@@ -342,19 +343,19 @@ async def start_router(
             "random": RandomScheduler,
             "round_robin": RoundRobinScheduler,
         }
-        
+
         # Rust 高性能调度器 (需要编译)
         if RUST_POLICIES_AVAILABLE:
             scheduler_map["power_of_two"] = RustPowerOfTwoScheduler
             scheduler_map["cache_aware"] = RustCacheAwareScheduler
-        
+
         scheduler_class = scheduler_map.get(scheduler_type, StreamLoadScheduler)
         scheduler = scheduler_class(system, worker_name)
-    
+
     # 启动 scheduler (如果有 start 方法)
     if hasattr(scheduler, "start"):
         await scheduler.start()
-    
+
     handler = _OpenAIHandler(system, model_name, scheduler)
 
     app = web.Application()
@@ -363,7 +364,7 @@ async def start_router(
     app.router.add_get("/v1/models", handler.list_models)
     app.router.add_post("/v1/chat/completions", handler.chat_completions)
     app.router.add_post("/v1/completions", handler.completions)
-    
+
     # 保存 scheduler 引用用于清理
     app["scheduler"] = scheduler
 
@@ -385,6 +386,6 @@ async def stop_router(runner: web.AppRunner):
         scheduler = app.get("scheduler")
         if scheduler and hasattr(scheduler, "stop"):
             await scheduler.stop()
-        
+
         await runner.cleanup()
         print("[Router] HTTP server stopped")
