@@ -1,5 +1,5 @@
 site_name: Pulsing
-site_description: Lightweight Distributed Actor Framework for LLM Inference
+site_description: A lightweight distributed Actor framework for building scalable systems
 site_url: https://github.com/reiase/pulsing
 docs_dir: src
 
@@ -25,7 +25,7 @@ theme:
   features:
     - navigation.tabs
     - navigation.sections
-    - navigation.instant
+    # - navigation.instant  # Disabled due to conflict with i18n plugin
     - navigation.indexes
     - navigation.tracking
     - navigation.top
@@ -81,11 +81,19 @@ plugins:
           site_name: "Pulsing 文档"
           nav_translations:
             Home: 首页
+            Installation: 安装指南
             Quick Start: 快速开始
             Guide: 用户指南
+            Actors: Actor 完整指南
             Architecture: 架构
+            Distributed Queue: 分布式内存队列
+            Semantics: 语义与保证
             Actor System: Actor 系统
             Remote Actors: 远程 Actor
+            Examples: 示例
+            Ping-Pong: Ping-Pong
+            Distributed Counter: 分布式计数器
+            LLM Inference: LLM 推理
             Design: 设计文档
             Node Discovery: 节点发现
             Actor Addressing: Actor 寻址
@@ -105,12 +113,21 @@ plugins:
 
 nav:
   - Home: index.md
+  - Installation: installation.md
   - Quick Start: quickstart/index.md
   - Guide:
     - guide/index.md
+    - Actors: guide/actors.md
     - Architecture: guide/architecture.md
+    - Distributed Queue: guide/queue.md
+    - Semantics: guide/semantics.md
     - Actor System: guide/actor_system.md
     - Remote Actors: guide/remote_actors.md
+  - Examples:
+    - examples/index.md
+    - Ping-Pong: examples/ping_pong.md
+    - Distributed Counter: examples/distributed_counter.md
+    - LLM Inference: examples/llm_inference.md
   - Design:
     - Actor System: design/actor-system.md
     - Node Discovery: design/node-discovery.md

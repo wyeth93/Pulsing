@@ -100,8 +100,8 @@ Sender ─→ ActorRef(Remote)          │                            Actor
 
 ## 更多详情
 
-- [Actor 系统设计](design/actor-system.md)
-- [节点发现](design/node-discovery.md)
-- [Actor 寻址](design/actor-addressing.md)
-- [HTTP2 传输](design/http2-transport.md)
+- [Actor 系统设计](../design/actor-system.md)
+- [节点发现](../design/node-discovery.md)
+- [Actor 寻址](../design/actor-addressing.md)
+- [HTTP2 传输](../design/http2-transport.md)
 

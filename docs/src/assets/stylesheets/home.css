@@ -1,7 +1,7 @@
-/* Pulsing Homepage Styles */
+/* Pulsing Homepage Styles - Scoped to homepage only */
 
-/* Custom color palette - Electric Indigo */
-:root > * {
+/* Custom color palette - Electric Indigo (global) */
+:root {
   --md-primary-fg-color: #6366F1;
   --md-primary-fg-color--light: #818CF8;
   --md-primary-fg-color--dark: #4F46E5;
@@ -9,11 +9,14 @@
   --md-accent-fg-color--transparent: rgba(99, 102, 241, 0.1);
 }
 
-* {
-  box-sizing: border-box;
-}
+/* ========================================
+   HOMEPAGE ONLY STYLES
+   All styles below are scoped to .mdx-container
+   which only exists on the homepage
+   ======================================== */
 
-.container {
+/* Homepage container */
+.mdx-container .container {
   width: 100%;
   max-width: 1140px;
   margin-right: auto;
@@ -53,7 +56,7 @@
   100% { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
-.intro-message {
+.mdx-container .intro-message {
   position: relative;
   padding: 40px 20px;
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -62,19 +65,19 @@
   z-index: 1;
 }
 
-.hero-logo {
+.mdx-container .hero-logo {
   display: inline-flex;
   align-items: center;
   margin-bottom: 16px;
 }
 
-.hero-icon {
+.mdx-container .hero-icon {
   font-size: 80px;
   margin-right: 20px;
   filter: drop-shadow(3px 3px 8px rgba(0, 0, 0, 0.5));
 }
 
-.intro-message h1 {
+.mdx-container .intro-message h1 {
   font-weight: 700;
   margin: 0;
   display: inline-block;
@@ -86,7 +89,7 @@
   letter-spacing: -0.02em;
 }
 
-.intro-message h3 {
+.mdx-container .intro-message h3 {
   font-size: 1.3rem;
   text-shadow: 2px 2px 6px rgba(0, 0, 0, 0.5);
   font-weight: 400;
@@ -94,7 +97,7 @@
   color: rgba(255, 255, 255, 0.9);
 }
 
-.intro-divider {
+.mdx-container .intro-divider {
   width: 400px;
   max-width: 80%;
   border-top: 1px solid rgba(255, 255, 255, 0.4);
@@ -102,20 +105,20 @@
   margin: 24px auto;
 }
 
-.list-inline {
+.mdx-container .list-inline {
   padding-left: 0;
   margin-left: -5px;
   list-style: none;
   margin-bottom: 0;
 }
 
-.list-inline li {
+.mdx-container .list-inline li {
   display: inline-block;
   padding-right: 5px;
   padding-left: 5px;
 }
 
-.intro-message .md-button {
+.mdx-container .intro-message .md-button {
   margin: 8px;
   padding: 14px 36px;
   font-size: 1rem;
@@ -124,29 +127,29 @@
   transition: all 0.3s ease;
 }
 
-.intro-message .md-button--primary {
+.mdx-container .intro-message .md-button--primary {
   background: #ffffff;
   color: #4F46E5;
   border: none;
 }
 
-.intro-message .md-button:not(.md-button--primary) {
+.mdx-container .intro-message .md-button:not(.md-button--primary) {
   background: transparent;
   color: #ffffff;
   border: 2px solid rgba(255, 255, 255, 0.6);
 }
 
-.intro-message .md-button:hover {
+.mdx-container .intro-message .md-button:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
 }
 
-.intro-message .md-button--primary:hover {
+.mdx-container .intro-message .md-button--primary:hover {
   background: #f8f8f8;
   box-shadow: 0 8px 25px rgba(255, 255, 255, 0.3);
 }
 
-.intro-message .md-button:not(.md-button--primary):hover {
+.mdx-container .intro-message .md-button:not(.md-button--primary):hover {
   background: rgba(255, 255, 255, 0.1);
   border-color: #ffffff;
 }
@@ -156,6 +159,15 @@
   padding: 100px 0;
   background-color: var(--md-default-bg-color);
   border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+}
+
+.pulsing-intro-section .container {
+  width: 100%;
+  max-width: 1140px;
+  margin-right: auto;
+  margin-left: auto;
+  padding-right: 15px;
+  padding-left: 15px;
 }
 
 .pulsing-intro-content {
@@ -190,6 +202,15 @@
 .pulsing-feature-section {
   padding: 80px 0;
   border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+}
+
+.pulsing-feature-section .container {
+  width: 100%;
+  max-width: 1140px;
+  margin-right: auto;
+  margin-left: auto;
+  padding-right: 15px;
+  padding-left: 15px;
 }
 
 .pulsing-feature-section:nth-child(even) {
@@ -289,20 +310,22 @@
 
 /* Responsive Design */
 @media (max-width: 768px) {
-  .container {
+  .mdx-container .container,
+  .pulsing-intro-section .container,
+  .pulsing-feature-section .container {
     padding-right: 16px;
     padding-left: 16px;
   }
 
-  .intro-message h1 {
+  .mdx-container .intro-message h1 {
     font-size: 3rem;
   }
 
-  .hero-icon {
+  .mdx-container .hero-icon {
     font-size: 50px;
   }
 
-  .intro-message h3 {
+  .mdx-container .intro-message h3 {
     font-size: 1rem;
   }
 
@@ -346,13 +369,13 @@
 }
 
 @media (max-width: 960px) {
-  .intro-message .list-inline li {
+  .mdx-container .intro-message .list-inline li {
     display: block;
     padding: 0;
     margin-bottom: 12px;
   }
 
-  .intro-message .md-button {
+  .mdx-container .intro-message .md-button {
     display: block;
     margin: 0 auto;
     width: 90%;
@@ -361,18 +384,17 @@
 }
 
 @media (max-width: 480px) {
-  .intro-message h1 {
+  .mdx-container .intro-message h1 {
     font-size: 2.5rem;
   }
 
-  .hero-icon {
+  .mdx-container .hero-icon {
     font-size: 40px;
     margin-right: 10px;
   }
 
-  .intro-message .md-button {
+  .mdx-container .intro-message .md-button {
     max-width: 300px;
     padding: 12px 24px;
   }
 }
-

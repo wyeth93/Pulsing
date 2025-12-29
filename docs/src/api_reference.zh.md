@@ -138,5 +138,5 @@ async def create_actor_system(config: SystemConfig) -> ActorSystem:
 
 ## 示例
 
-查看[快速开始指南](quick_start.zh.md)了解使用示例。
+查看[快速开始指南](quickstart/index.zh.md)了解使用示例。
 
