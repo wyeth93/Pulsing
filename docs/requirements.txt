@@ -1,0 +1,14 @@
+# Documentation dependencies
+# 
+# Note: This file is maintained for backward compatibility.
+# For new projects, prefer using pyproject.toml with uv or pip:
+#   uv sync (recommended)
+#   pip install -e .
+
+mkdocs>=1.5.0
+mkdocs-material>=9.4.0
+mkdocs-static-i18n>=1.0.0
+mkdocstrings>=0.24.0
+mkdocstrings-python>=1.7.0
+mkdocs-linkcheck>=1.0.0
+jieba>=0.42.1

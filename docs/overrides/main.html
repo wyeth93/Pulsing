@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+  {{ super() }}
+  
+  {# Add Chinese language support scripts if needed #}
+  {% if page.meta and page.meta.lang == 'zh' %}
+    <script>
+      // Ensure proper Chinese font rendering
+      document.documentElement.lang = 'zh-CN';
+    </script>
+  {% endif %}
+{% endblock %}
+

@@ -1,0 +1,132 @@
+site_name: Pulsing
+site_description: Lightweight Distributed Actor Framework for LLM Inference
+site_url: https://github.com/reiase/pulsing
+docs_dir: src
+
+repo_name: reiase/pulsing
+repo_url: https://github.com/reiase/pulsing
+
+theme:
+  name: material
+  custom_dir: overrides
+  palette:
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.instant
+    - navigation.indexes
+    - navigation.tracking
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+          site_name: "Pulsing Documentation"
+        - locale: zh
+          name: 中文
+          build: true
+          site_name: "Pulsing 文档"
+          nav_translations:
+            Home: 首页
+            Quick Start: 快速开始
+            Guide: 用户指南
+            Architecture: 架构
+            Actor System: Actor 系统
+            Remote Actors: 远程 Actor
+            Design: 设计文档
+            Node Discovery: 节点发现
+            Actor Addressing: Actor 寻址
+            HTTP2 Transport: HTTP2 传输
+            Load Sync: 负载同步
+            AS Actor Decorator: AS Actor 装饰器
+            API Reference: API 参考
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: numpy
+            docstring_options:
+              ignore_init_summary: yes
+            merge_init_into_class: yes
+            show_submodules: no
+
+nav:
+  - Home: index.md
+  - Quick Start: quickstart/index.md
+  - Guide:
+    - guide/index.md
+    - Architecture: guide/architecture.md
+    - Actor System: guide/actor_system.md
+    - Remote Actors: guide/remote_actors.md
+  - Design:
+    - Actor System: design/actor-system.md
+    - Node Discovery: design/node-discovery.md
+    - Actor Addressing: design/actor-addressing.md
+    - HTTP2 Transport: design/http2-transport.md
+    - Load Sync: design/load_sync.md
+    - AS Actor Decorator: design/as-actor-decorator.md
+  - API Reference: api_reference.md
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/reiase/pulsing
+
+extra_css:
+  - assets/stylesheets/home.css
+
+copyright: © 2025 Pulsing. All rights reserved.

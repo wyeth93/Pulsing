@@ -1,0 +1,286 @@
+{% extends "main.html" %}
+
+{% block tabs %}
+  {{ super() }}
+
+  <style>
+    /* Prevent horizontal overflow */
+    body {
+      overflow-x: hidden;
+    }
+
+    /* Hide main content for home page */
+    .md-content {
+      display: none;
+    }
+
+    /* Hide table of contents */
+    @media screen and (min-width: 60em) {
+      .md-sidebar--secondary {
+        display: none;
+      }
+    }
+
+    /* Hide navigation */
+    @media screen and (min-width: 76.25em) {
+      .md-sidebar--primary {
+        display: none;
+      }
+    }
+
+    /* Make header static */
+    .md-header {
+      position: initial;
+    }
+
+    .md-main__inner {
+      margin: 0;
+    }
+
+    /* Style Learn More links */
+    .pulsing-feature-section .md-button,
+    .pulsing-intro-section .md-button:not(.md-button--primary) {
+      background-color: transparent;
+      color: #6366F1;
+      text-decoration: underline;
+      border: none;
+      box-shadow: none;
+    }
+
+    .pulsing-feature-section .md-button:hover,
+    .pulsing-intro-section .md-button:not(.md-button--primary):hover {
+      background-color: transparent;
+      color: #818CF8;
+      text-decoration: underline;
+    }
+  </style>
+
+  <script>
+    // Fix palette toggle jumping to bottom of page
+    (function() {
+      let savedScrollY = 0;
+      let isTogglingPalette = false;
+
+      if ('scrollRestoration' in history) {
+        history.scrollRestoration = 'manual';
+      }
+
+      const preventScroll = function() {
+        if (isTogglingPalette) {
+          window.scrollTo(0, savedScrollY);
+        }
+      };
+
+      document.addEventListener('click', function(e) {
+        const paletteLabel = e.target.closest('[for^="__palette"]');
+        if (paletteLabel) {
+          savedScrollY = window.scrollY;
+          isTogglingPalette = true;
+          window.addEventListener('scroll', preventScroll, { passive: false });
+          setTimeout(function() {
+            isTogglingPalette = false;
+            window.removeEventListener('scroll', preventScroll);
+          }, 100);
+        }
+      }, true);
+
+      window.addEventListener('hashchange', function(e) {
+        if (window.location.hash.startsWith('#__palette')) {
+          e.preventDefault();
+          window.scrollTo(0, savedScrollY);
+          history.replaceState(null, null, window.location.pathname);
+        }
+      }, false);
+
+      document.addEventListener('DOMContentLoaded', function() {
+        const paletteInputs = document.querySelectorAll('input[name="__palette"]');
+        paletteInputs.forEach(function(input) {
+          input.addEventListener('change', function() {
+            window.scrollTo(0, savedScrollY);
+          });
+        });
+      });
+    })();
+  </script>
+
+  <!-- Hero Section -->
+  <section class="mdx-container">
+    <div class="container">
+      <div class="intro-message">
+        <div class="hero-logo">
+          <span class="hero-icon">⚡</span>
+          <h1>Pulsing</h1>
+        </div>
+        <h3>Lightweight Distributed Actor Framework for LLM Inference</h3>
+        <hr class="intro-divider" />
+        <ul class="list-inline">
+          <li>
+            <a href="quickstart/" class="md-button md-button--primary">Get Started</a>
+          </li>
+          <li>
+            <a href="guide/" class="md-button">User Guide</a>
+          </li>
+          <li>
+            <a href="design/" class="md-button">Design Docs</a>
+          </li>
+          <li>
+            <a href="https://github.com/reiase/pulsing" class="md-button" target="_blank" rel="noopener">GitHub</a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- What is Pulsing Section -->
+  <section class="pulsing-intro-section">
+    <div class="container">
+      <div class="pulsing-intro-content">
+        <h2>What is Pulsing?</h2>
+        <p>
+          Pulsing is a lightweight distributed Actor framework designed for building scalable LLM inference services.
+          It provides location-transparent messaging, automatic cluster discovery using the SWIM protocol,
+          high-performance async processing with Tokio, and seamless Python integration via PyO3.
+          Build distributed AI systems with minimal boilerplate and maximum performance.
+        </p>
+        <a href="quickstart/" class="md-button md-button--primary">Learn More</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature 1: Location Transparent Messaging -->
+  <section class="pulsing-feature-section">
+    <div class="container">
+      <div class="pulsing-feature-content">
+        <div class="pulsing-feature-text">
+          <h2>Location Transparent Messaging</h2>
+          <p>
+            Send messages to actors without knowing their physical location.
+            Pulsing automatically routes messages across the cluster using efficient HTTP/2 transport.
+          </p>
+          <p>
+            Actors can be local or remote - your code stays the same. Scale from single-node to distributed
+            deployment without changing a line of application logic.
+          </p>
+          <a href="guide/remote_actors/" class="md-button">Learn More</a>
+        </div>
+        <div class="pulsing-feature-demo">
+          <div class="code-preview">
+            <pre><code class="language-python">@as_actor
+class Worker:
+    async def process(self, data):
+        return await self.model.generate(data)
+
+# Send to any worker - local or remote
+result = await worker.process(input_data)</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature 2: Automatic Cluster Discovery -->
+  <section class="pulsing-feature-section reverse">
+    <div class="container">
+      <div class="pulsing-feature-content">
+        <div class="pulsing-feature-text">
+          <h2>Automatic Cluster Discovery</h2>
+          <p>
+            Built-in SWIM protocol enables automatic node discovery and failure detection.
+            No external coordination service required - nodes find each other and form clusters automatically.
+          </p>
+          <p>
+            Gossip-based protocol ensures consistency across the cluster with minimal network overhead.
+            Nodes join and leave gracefully with automatic state reconciliation.
+          </p>
+          <a href="design/node-discovery/" class="md-button">Learn More</a>
+        </div>
+        <div class="pulsing-feature-demo">
+          <div class="code-preview">
+            <pre><code class="language-python"># Start a node - it auto-discovers peers
+system = ActorSystem(
+    bind_addr="0.0.0.0:8080",
+    seeds=["node1:8080", "node2:8080"]
+)
+
+# New nodes automatically join the cluster
+await system.start()</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature 3: High Performance Async -->
+  <section class="pulsing-feature-section">
+    <div class="container">
+      <div class="pulsing-feature-content">
+        <div class="pulsing-feature-text">
+          <h2>High Performance Async Processing</h2>
+          <p>
+            Built on Tokio's high-performance async runtime, Pulsing handles thousands of concurrent
+            actors with minimal overhead. Each actor runs in its own lightweight task.
+          </p>
+          <p>
+            Perfect for LLM inference where you need to manage many concurrent requests efficiently.
+            Native Rust core with Python bindings delivers both safety and speed.
+          </p>
+          <a href="guide/actor_system/" class="md-button">Learn More</a>
+        </div>
+        <div class="pulsing-feature-demo">
+          <div class="code-preview">
+            <pre><code class="language-python"># Spawn thousands of actors
+workers = [
+    system.spawn(Worker, name=f"worker-{i}")
+    for i in range(1000)
+]
+
+# All run concurrently with minimal overhead
+results = await asyncio.gather(*[
+    w.process(data) for w, data in zip(workers, inputs)
+])</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Feature 4: Python First -->
+  <section class="pulsing-feature-section reverse">
+    <div class="container">
+      <div class="pulsing-feature-content">
+        <div class="pulsing-feature-text">
+          <h2>Python-First Design</h2>
+          <p>
+            Write actors in Python with the <code>@as_actor</code> decorator. 
+            No boilerplate, no complex setup - just define your class and it becomes a distributed actor.
+          </p>
+          <p>
+            Seamless integration with Python ML frameworks like PyTorch, Transformers, and vLLM.
+            Build production-ready inference services in pure Python.
+          </p>
+          <a href="quickstart/" class="md-button">Learn More</a>
+        </div>
+        <div class="pulsing-feature-demo">
+          <div class="code-preview">
+            <pre><code class="language-python">from pulsing import as_actor, ActorSystem
+
+@as_actor
+class LLMService:
+    def __init__(self, model_name: str):
+        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+    
+    async def generate(self, prompt: str) -> str:
+        return self.model.generate(prompt)</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+{% endblock %}
+
+{% block content %}{% endblock %}
+{% block footer %}
+  {{ super() }}
+{% endblock %}
+
