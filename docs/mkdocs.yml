@@ -82,7 +82,8 @@ plugins:
           nav_translations:
             Home: 首页
             Installation: 安装指南
-            Quick Start: 快速开始
+            Getting Started: 入门指南
+            Quick Start: 快速参考
             Guide: 用户指南
             Actors: Actor 完整指南
             Architecture: 架构
@@ -114,6 +115,7 @@ plugins:
 nav:
   - Home: index.md
   - Installation: installation.md
+  - Getting Started: getting_started.md
   - Quick Start: quickstart/index.md
   - Guide:
     - guide/index.md
