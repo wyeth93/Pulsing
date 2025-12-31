@@ -1,10 +1,10 @@
 site_name: Pulsing
 site_description: A lightweight distributed Actor framework for building scalable systems
-site_url: https://github.com/reiase/pulsing
+site_url: https://github.com/DeepLink-org/Pulsing
 docs_dir: src
 
-repo_name: reiase/pulsing
-repo_url: https://github.com/reiase/pulsing
+repo_name: DeepLink-org/Pulsing
+repo_url: https://github.com/DeepLink-org/Pulsing
 
 theme:
   name: material
