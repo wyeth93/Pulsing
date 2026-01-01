@@ -343,14 +343,35 @@ do_other_work()
 用于持续数据流：
 
 ```python
-# 发送流式请求
-msg = Message.stream("process", b"initial_data")
+from pulsing.actor import StreamMessage
 
-# 在响应到达时处理
-async for chunk in actor_ref.ask_stream(msg):
-    print(f"收到块: {chunk}")
-    process_chunk(chunk)
+# 返回流式响应的 Actor
+@as_actor
+class TokenGenerator:
+    async def generate(self, prompt: str) -> Message:
+        stream_msg, writer = StreamMessage.create("tokens")
+
+        async def produce():
+            for i, token in enumerate(self.generate_tokens(prompt)):
+                # 直接写入 Python 对象 - 自动序列化
+                await writer.write({"token": token, "index": i})
+            await writer.close()
+
+        asyncio.create_task(produce())
+        return stream_msg
+
+# 客户端消费流
+response = await generator.generate("Hello")
+async for chunk in response.stream_reader():
+    # chunk 已经是 Python dict - 自动反序列化
+    print(chunk["token"], end="", flush=True)
 ```
+
+**核心特性：**
+
+- **透明序列化**：直接读写 Python 对象
+- **异构流**：每个 chunk 可以有不同的结构
+- **背压控制**：有界缓冲防止内存溢出
 
 ---
 

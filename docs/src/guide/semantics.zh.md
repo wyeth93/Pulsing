@@ -70,6 +70,31 @@
 
 `StreamMessage.create(msg_type, buffer_size=32)` 返回 `(stream_msg, writer)`。
 
+### 流的组成
+
+- 流由 **Message 对象**组成，而非原始字节。
+- 流中的每个 chunk 都是完整的 `Message`，有自己的 `msg_type` 和 payload。
+- 这使得**异构流**成为可能，不同的 chunk 可以有不同的类型。
+
+### 透明的 Python 对象流式传输
+
+对于 Python 到 Python 的通信，流式传输是**完全透明的**：
+
+```python
+# 写入端 - 直接写入 Python 对象
+async def generate_stream():
+    stream_msg, writer = StreamMessage.create("tokens")
+    for token in tokens:
+        await writer.write({"token": token, "index": i})  # dict 自动 pickle
+    await writer.close()
+    return stream_msg
+
+# 读取端 - 直接接收 Python 对象
+async for chunk in response.stream_reader():
+    token = chunk["token"]  # chunk 已经是 Python dict
+    print(token)
+```
+
 ### 背压与缓冲
 
 - 底层是一个**有界**的 channel（大小为 `buffer_size`）。
@@ -85,7 +110,7 @@
 
 ### 投递语义
 
-- 流式 chunk 是 best-effort，可能出现“部分输出后中断”。
+- 流式 chunk 是 best-effort，可能出现"部分输出后中断"。
 - 建议每个 chunk 带上 `seq` / offset / id，让消费端可恢复/去重。
 
 ## 队列语义（`pulsing.queue`）

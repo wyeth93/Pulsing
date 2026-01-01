@@ -73,6 +73,31 @@ Practical implication:
 
 `StreamMessage.create(msg_type, buffer_size=32)` returns `(stream_msg, writer)`.
 
+### Stream composition
+
+- A stream is composed of **Message objects**, not raw bytes.
+- Each chunk in the stream is a complete `Message` with its own `msg_type` and payload.
+- This enables **heterogeneous streams** where different chunks can have different types.
+
+### Transparent Python object streaming
+
+For Python-to-Python communication, streaming is **fully transparent**:
+
+```python
+# Writer side - just write Python objects directly
+async def generate_stream():
+    stream_msg, writer = StreamMessage.create("tokens")
+    for token in tokens:
+        await writer.write({"token": token, "index": i})  # dict is auto-pickled
+    await writer.close()
+    return stream_msg
+
+# Reader side - receive Python objects directly
+async for chunk in response.stream_reader():
+    token = chunk["token"]  # chunk is already a Python dict
+    print(token)
+```
+
 ### Backpressure & buffering
 
 - The stream is backed by a **bounded channel** of size `buffer_size`.

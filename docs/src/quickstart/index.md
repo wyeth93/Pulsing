@@ -173,6 +173,41 @@ await actor.tell("log this event")
 
 ---
 
+## Streaming Responses
+
+For continuous data (LLM tokens, progress updates):
+
+```python
+from pulsing.actor import StreamMessage
+
+@as_actor
+class TokenGenerator:
+    async def generate(self, prompt: str):
+        stream_msg, writer = StreamMessage.create("tokens")
+
+        async def produce():
+            for i, word in enumerate(prompt.split()):
+                await writer.write({"token": word, "index": i})  # auto-serialized
+            await writer.close()
+
+        asyncio.create_task(produce())
+        return stream_msg
+
+
+# Consume the stream
+response = await generator.generate("Hello world from Pulsing")
+async for chunk in response.stream_reader():
+    print(chunk["token"])  # chunk is already a Python dict
+```
+
+**Key features:**
+
+- `writer.write(obj)` - Write any Python object (auto-pickled)
+- `stream_reader()` - Iterate and receive Python objects (auto-unpickled)
+- Bounded buffer with backpressure
+
+---
+
 ## Cluster Setup
 
 Pulsing uses SWIM gossip protocol - no external services needed!
@@ -203,6 +238,7 @@ result = await worker.ask("do_work")
 | **Actor** | Isolated unit with private state |
 | **Message** | Any Python object (string, dict, list, etc.) |
 | **ask/tell** | Request-response / fire-and-forget |
+| **Streaming** | Continuous data with automatic serialization |
 | **@as_actor** | Turn any class into an actor with method calls |
 | **Cluster** | Automatic discovery with SWIM protocol |
 

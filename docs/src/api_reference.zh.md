@@ -21,14 +21,107 @@ Actor 通信的消息包装器。
 
 ```python
 class Message:
-    @staticmethod
-    def single(msg_type: str, payload: bytes) -> Message:
-        """创建单条消息。"""
+    @property
+    def msg_type(self) -> str:
+        """获取消息类型。"""
+        pass
+
+    @property
+    def payload(self) -> bytes:
+        """获取原始负载字节。"""
+        pass
+
+    @property
+    def is_stream(self) -> bool:
+        """检查是否为流式消息。"""
         pass
 
     @staticmethod
-    def stream(msg_type: str, payload: bytes) -> Message:
-        """创建流式消息。"""
+    def single(msg_type: str, payload: bytes) -> Message:
+        """创建带原始字节的单条消息。"""
+        pass
+
+    def to_json(self) -> Any:
+        """将负载反序列化为 JSON。"""
+        pass
+
+    def to_object(self) -> Any:
+        """将负载反序列化为 Python 对象（pickle）。"""
+        pass
+
+    def stream_reader(self) -> StreamReader:
+        """获取流式消息的 StreamReader。"""
+        pass
+```
+
+### StreamMessage
+
+创建流式响应的工厂类。
+
+```python
+class StreamMessage:
+    @staticmethod
+    def create(
+        msg_type: str = "",
+        buffer_size: int = 32
+    ) -> tuple[Message, StreamWriter]:
+        """
+        创建流式消息及其写入器。
+
+        参数：
+            msg_type: 流块的默认消息类型
+            buffer_size: 有界通道缓冲区大小（背压控制）
+
+        返回：
+            (Message, StreamWriter) 元组
+        """
+        pass
+```
+
+### StreamWriter
+
+流式响应的写入器。支持自动 Python 对象序列化。
+
+```python
+class StreamWriter:
+    async def write(self, obj: Any) -> None:
+        """
+        将 Python 对象写入流。
+
+        对象会自动使用 pickle 序列化，
+        使 Python 到 Python 的流式传输完全透明。
+
+        参数：
+            obj: 任何可 pickle 的 Python 对象（dict、list、str 等）
+        """
+        pass
+
+    async def close(self) -> None:
+        """正常关闭流。"""
+        pass
+
+    async def error(self, message: str) -> None:
+        """带错误关闭流。"""
+        pass
+```
+
+### StreamReader
+
+流式响应的读取器。自动反序列化 Python 对象。
+
+```python
+class StreamReader:
+    async def __anext__(self) -> Any:
+        """
+        从流中获取下一个元素。
+
+        直接返回 Python 对象（自动反序列化）。
+        流结束时抛出 StopAsyncIteration。
+        """
+        pass
+
+    def __aiter__(self) -> StreamReader:
+        """返回自身作为异步迭代器。"""
         pass
 ```
 

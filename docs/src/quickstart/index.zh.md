@@ -173,6 +173,41 @@ await actor.tell("log this event")
 
 ---
 
+## 流式响应
+
+用于持续输出数据（LLM token、进度更新等）：
+
+```python
+from pulsing.actor import StreamMessage
+
+@as_actor
+class TokenGenerator:
+    async def generate(self, prompt: str):
+        stream_msg, writer = StreamMessage.create("tokens")
+
+        async def produce():
+            for i, word in enumerate(prompt.split()):
+                await writer.write({"token": word, "index": i})  # 自动序列化
+            await writer.close()
+
+        asyncio.create_task(produce())
+        return stream_msg
+
+
+# 消费流
+response = await generator.generate("Hello world from Pulsing")
+async for chunk in response.stream_reader():
+    print(chunk["token"])  # chunk 已经是 Python dict
+```
+
+**核心特性：**
+
+- `writer.write(obj)` - 写入任意 Python 对象（自动 pickle）
+- `stream_reader()` - 迭代接收 Python 对象（自动反序列化）
+- 有界缓冲区，支持背压
+
+---
+
 ## 集群配置
 
 Pulsing 使用 SWIM gossip 协议——无需外部服务！
@@ -203,6 +238,7 @@ result = await worker.ask("do_work")
 | **Actor** | 具有私有状态的隔离单元 |
 | **消息** | 任意 Python 对象（字符串、字典、列表等） |
 | **ask/tell** | 请求-响应 / 发后即忘 |
+| **流式响应** | 持续数据流，自动序列化 |
 | **@as_actor** | 将任何类转换为支持方法调用的 Actor |
 | **集群** | 使用 SWIM 协议自动发现 |
 

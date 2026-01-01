@@ -374,14 +374,35 @@ do_other_work()
 For continuous data flow:
 
 ```python
-# Send streaming request
-msg = Message.stream("process", b"initial_data")
+from pulsing.actor import StreamMessage
 
-# Process responses as they arrive
-async for chunk in actor_ref.ask_stream(msg):
-    print(f"Received chunk: {chunk}")
-    process_chunk(chunk)
+# Actor that returns a streaming response
+@as_actor
+class TokenGenerator:
+    async def generate(self, prompt: str) -> Message:
+        stream_msg, writer = StreamMessage.create("tokens")
+
+        async def produce():
+            for i, token in enumerate(self.generate_tokens(prompt)):
+                # Write Python objects directly - auto-serialized
+                await writer.write({"token": token, "index": i})
+            await writer.close()
+
+        asyncio.create_task(produce())
+        return stream_msg
+
+# Client consuming the stream
+response = await generator.generate("Hello")
+async for chunk in response.stream_reader():
+    # chunk is already a Python dict - auto-deserialized
+    print(chunk["token"], end="", flush=True)
 ```
+
+**Key Features:**
+
+- **Transparent serialization**: Write/read Python objects directly
+- **Heterogeneous streams**: Each chunk can have different structure
+- **Backpressure**: Bounded buffer prevents memory overflow
 
 **Use When:**
 

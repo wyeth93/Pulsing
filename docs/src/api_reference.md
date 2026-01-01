@@ -21,14 +21,107 @@ Message wrapper for actor communication.
 
 ```python
 class Message:
-    @staticmethod
-    def single(msg_type: str, payload: bytes) -> Message:
-        """Create a single message."""
+    @property
+    def msg_type(self) -> str:
+        """Get the message type."""
+        pass
+
+    @property
+    def payload(self) -> bytes:
+        """Get the raw payload bytes."""
+        pass
+
+    @property
+    def is_stream(self) -> bool:
+        """Check if this is a streaming message."""
         pass
 
     @staticmethod
-    def stream(msg_type: str, payload: bytes) -> Message:
-        """Create a streaming message."""
+    def single(msg_type: str, payload: bytes) -> Message:
+        """Create a single message with raw bytes."""
+        pass
+
+    def to_json(self) -> Any:
+        """Deserialize payload as JSON."""
+        pass
+
+    def to_object(self) -> Any:
+        """Deserialize payload as Python object (pickle)."""
+        pass
+
+    def stream_reader(self) -> StreamReader:
+        """Get stream reader for streaming messages."""
+        pass
+```
+
+### StreamMessage
+
+Factory for creating streaming responses.
+
+```python
+class StreamMessage:
+    @staticmethod
+    def create(
+        msg_type: str = "",
+        buffer_size: int = 32
+    ) -> tuple[Message, StreamWriter]:
+        """
+        Create a streaming message and its writer.
+
+        Args:
+            msg_type: Default message type for stream chunks
+            buffer_size: Bounded channel buffer size (backpressure)
+
+        Returns:
+            tuple of (Message, StreamWriter)
+        """
+        pass
+```
+
+### StreamWriter
+
+Writer for streaming responses. Supports automatic Python object serialization.
+
+```python
+class StreamWriter:
+    async def write(self, obj: Any) -> None:
+        """
+        Write a Python object to the stream.
+
+        The object is automatically serialized using pickle,
+        making Python-to-Python streaming transparent.
+
+        Args:
+            obj: Any picklable Python object (dict, list, str, etc.)
+        """
+        pass
+
+    async def close(self) -> None:
+        """Close the stream normally."""
+        pass
+
+    async def error(self, message: str) -> None:
+        """Close the stream with an error."""
+        pass
+```
+
+### StreamReader
+
+Reader for streaming responses. Automatically deserializes Python objects.
+
+```python
+class StreamReader:
+    async def __anext__(self) -> Any:
+        """
+        Get the next item from the stream.
+
+        Returns Python objects directly (automatically unpickled).
+        Raises StopAsyncIteration when stream ends.
+        """
+        pass
+
+    def __aiter__(self) -> StreamReader:
+        """Return self as async iterator."""
         pass
 ```
 
