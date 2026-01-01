@@ -6,7 +6,7 @@ Usage: python examples/python/message_patterns.py
 """
 
 import asyncio
-import json
+
 from pulsing.actor import (
     Actor,
     Message,
@@ -36,7 +36,7 @@ class PatternDemo(Actor):
             async def produce():
                 try:
                     for token in ["Hello", " ", "World", "!"]:
-                        await writer.write_json({"token": token})
+                        await writer.write({"token": token})
                         await asyncio.sleep(0.1)
                     await writer.close()
                 except Exception:
@@ -62,12 +62,11 @@ async def main():
     print(await actor.ask({"action": "add", "n": 5}))  # {'value': 15}
     print(await actor.ask({"action": "get"}))  # {'value': 15}
 
-    # Pattern 2: Streaming
+    # Pattern 2: Streaming (transparent Python objects)
     print("\n--- Streaming ---")
     response = await actor.ask("stream")
     async for chunk in response.stream_reader():
-        token = json.loads(chunk)["token"]
-        print(token, end="", flush=True)
+        print(chunk["token"], end="", flush=True)  # 直接是 Python dict
     print()
 
     # Pattern 3: JSON Message (backward compatible)

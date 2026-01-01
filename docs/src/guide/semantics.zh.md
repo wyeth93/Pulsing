@@ -73,7 +73,7 @@
 ### 背压与缓冲
 
 - 底层是一个**有界**的 channel（大小为 `buffer_size`）。
-- `writer.write(...)` / `writer.write_json(...)` 在 buffer 满时会 `await` → 自然背压。
+- `writer.write(...)` 在 buffer 满时会 `await` → 自然背压。
 
 ### 生命周期
 

@@ -76,7 +76,7 @@ Practical implication:
 ### Backpressure & buffering
 
 - The stream is backed by a **bounded channel** of size `buffer_size`.
-- `writer.write(...)` / `writer.write_json(...)` **await** when the buffer is full → natural backpressure.
+- `writer.write(...)` **awaits** when the buffer is full → natural backpressure.
 
 ### Lifecycle
 
