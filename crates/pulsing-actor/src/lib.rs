@@ -108,6 +108,7 @@ pub mod circuit_breaker;
 pub mod cluster;
 pub mod metrics;
 pub mod policies;
+pub mod supervision;
 pub mod system;
 pub mod system_actor;
 pub mod tracing;
@@ -130,6 +131,7 @@ pub mod watch;
 /// import from `pulsing_actor::actor::*`.
 pub mod prelude {
     pub use crate::actor::{Actor, ActorContext, ActorRef, Message};
+    pub use crate::supervision::{BackoffStrategy, RestartPolicy, SupervisionSpec};
     pub use crate::system::{
         ActorSystem, LoadBalanceStrategy, ResolveOptions, SpawnOptions, SystemConfig,
     };

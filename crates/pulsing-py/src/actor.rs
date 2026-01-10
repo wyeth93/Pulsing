@@ -3,6 +3,7 @@
 use futures::StreamExt;
 use pulsing_actor::actor::{ActorId, ActorPath, NodeId};
 use pulsing_actor::prelude::*;
+use pulsing_actor::supervision::{BackoffStrategy, RestartPolicy, SupervisionSpec};
 use pyo3::exceptions::{PyException, PyRuntimeError, PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -937,28 +938,98 @@ impl PyActorSystem {
         self.inner.addr().to_string()
     }
 
-    #[pyo3(signature = (name, handler, public=false))]
+    #[pyo3(signature = (
+        name,
+        handler,
+        public=false,
+        restart_policy="never",
+        max_restarts=3,
+        min_backoff=0.1,
+        max_backoff=30.0
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn spawn<'py>(
         &self,
         py: Python<'py>,
         name: String,
         handler: PyObject,
         public: bool,
+        restart_policy: &str,
+        max_restarts: u32,
+        min_backoff: f64,
+        max_backoff: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
         let system = self.inner.clone();
         let event_loop = self.event_loop.clone();
 
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let actor = PythonActorWrapper::new(handler, event_loop);
+        // Parse supervision config
+        let policy = match restart_policy.to_lowercase().as_str() {
+            "always" => RestartPolicy::Always,
+            "on-failure" | "on_failure" => RestartPolicy::OnFailure,
+            _ => RestartPolicy::Never,
+        };
 
-            let actor_ref = if public {
-                let path = ActorPath::new(format!("actors/{}", name)).map_err(to_pyerr)?;
-                system
-                    .spawn_named(path, &name, actor)
-                    .await
-                    .map_err(to_pyerr)?
+        let supervision = if matches!(policy, RestartPolicy::Never) {
+            SupervisionSpec::never()
+        } else {
+            SupervisionSpec {
+                policy,
+                max_restarts,
+                backoff: BackoffStrategy::exponential(
+                    std::time::Duration::from_secs_f64(min_backoff),
+                    std::time::Duration::from_secs_f64(max_backoff),
+                ),
+                ..Default::default()
+            }
+        };
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let options = pulsing_actor::system::SpawnOptions::new()
+                .public(public)
+                .supervision(supervision);
+
+            let actor_ref = if matches!(policy, RestartPolicy::Never) {
+                // handler is the instance
+                let actor = PythonActorWrapper::new(handler, event_loop);
+                if public {
+                    let path = ActorPath::new(format!("actors/{}", name)).map_err(to_pyerr)?;
+                    system
+                        .spawn_named_with_options(path, &name, actor, options)
+                        .await
+                        .map_err(to_pyerr)?
+                } else {
+                    system
+                        .spawn_with_options(&name, actor, options)
+                        .await
+                        .map_err(to_pyerr)?
+                }
             } else {
-                system.spawn(&name, actor).await.map_err(to_pyerr)?
+                // handler is a factory
+                let factory = move || {
+                    let handler = handler.clone();
+                    let event_loop = event_loop.clone();
+
+                    Python::with_gil(|py| -> anyhow::Result<PythonActorWrapper> {
+                        // Call factory to get instance
+                        let instance = handler
+                            .call0(py)
+                            .map_err(|e| anyhow::anyhow!("Python factory error: {:?}", e))?;
+                        Ok(PythonActorWrapper::new(instance, event_loop))
+                    })
+                };
+
+                if public {
+                    let path = ActorPath::new(format!("actors/{}", name)).map_err(to_pyerr)?;
+                    system
+                        .spawn_named_factory(path, &name, factory, options)
+                        .await
+                        .map_err(to_pyerr)?
+                } else {
+                    system
+                        .spawn_factory(&name, factory, options)
+                        .await
+                        .map_err(to_pyerr)?
+                }
             };
 
             Ok(PyActorRef { inner: actor_ref })

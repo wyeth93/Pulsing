@@ -207,6 +207,12 @@ class PythonActorService(_ActorBase):
         kwargs = data.get("kwargs", {})
         public = data.get("public", True)
 
+        # Supervision config
+        restart_policy = data.get("restart_policy", "never")
+        max_restarts = data.get("max_restarts", 3)
+        min_backoff = data.get("min_backoff", 0.1)
+        max_backoff = data.get("max_backoff", 30.0)
+
         cls = _actor_class_registry.get(class_name)
         if cls is None:
             return Message.from_json(
@@ -214,9 +220,26 @@ class PythonActorService(_ActorBase):
             )
 
         try:
-            instance = cls(*args, **kwargs)
-            actor = _WrappedActor(instance)
-            actor_ref = await self.system.spawn(actor_name, actor, public=public)
+            if restart_policy != "never":
+                # For supervision, we must provide a factory
+                def factory():
+                    instance = cls(*args, **kwargs)
+                    return _WrappedActor(instance)
+
+                actor_ref = await self.system.spawn(
+                    actor_name,
+                    factory,
+                    public=public,
+                    restart_policy=restart_policy,
+                    max_restarts=max_restarts,
+                    min_backoff=min_backoff,
+                    max_backoff=max_backoff,
+                )
+            else:
+                # Standard spawn
+                instance = cls(*args, **kwargs)
+                actor = _WrappedActor(instance)
+                actor_ref = await self.system.spawn(actor_name, actor, public=public)
 
             method_names = [
                 n
@@ -240,9 +263,21 @@ class PythonActorService(_ActorBase):
 class ActorClass:
     """Actor class wrapper"""
 
-    def __init__(self, cls: type):
+    def __init__(
+        self,
+        cls: type,
+        restart_policy: str = "never",
+        max_restarts: int = 3,
+        min_backoff: float = 0.1,
+        max_backoff: float = 30.0,
+    ):
         self._cls = cls
         self._class_name = f"{cls.__module__}.{cls.__name__}"
+        self._restart_policy = restart_policy
+        self._max_restarts = max_restarts
+        self._min_backoff = min_backoff
+        self._max_backoff = max_backoff
+
         self._methods = [
             n
             for n, _ in inspect.getmembers(cls, predicate=inspect.isfunction)
@@ -263,10 +298,27 @@ class ActorClass:
         Note: Use create_actor_system() to create ActorSystem,
         which automatically registers PythonActorService.
         """
-        instance = self._cls(*args, **kwargs)
-        actor = _WrappedActor(instance)
         actor_name = name or f"{self._cls.__name__}_{uuid.uuid4().hex[:8]}"
-        actor_ref = await system.spawn(actor_name, actor, public=True)
+
+        if self._restart_policy != "never":
+
+            def factory():
+                instance = self._cls(*args, **kwargs)
+                return _WrappedActor(instance)
+
+            actor_ref = await system.spawn(
+                actor_name,
+                factory,
+                public=True,
+                restart_policy=self._restart_policy,
+                max_restarts=self._max_restarts,
+                min_backoff=self._min_backoff,
+                max_backoff=self._max_backoff,
+            )
+        else:
+            instance = self._cls(*args, **kwargs)
+            actor = _WrappedActor(instance)
+            actor_ref = await system.spawn(actor_name, actor, public=True)
 
         return ActorProxy(actor_ref, self._methods)
 
@@ -315,6 +367,11 @@ class ActorClass:
                     "args": list(args),
                     "kwargs": kwargs,
                     "public": True,
+                    # Supervision config
+                    "restart_policy": self._restart_policy,
+                    "max_restarts": self._max_restarts,
+                    "min_backoff": self._min_backoff,
+                    "max_backoff": self._max_backoff,
                 },
             )
         )
@@ -336,31 +393,43 @@ class ActorClass:
         return self._cls(*args, **kwargs)
 
 
-def as_actor(cls: type[T]) -> ActorClass:
+def as_actor(
+    cls: type[T] | None = None,
+    *,
+    restart_policy: str = "never",
+    max_restarts: int = 3,
+    min_backoff: float = 0.1,
+    max_backoff: float = 30.0,
+) -> ActorClass:
     """@as_actor decorator
 
     Converts a regular class into a distributed deployable Actor.
 
+    Supports supervision configuration:
+    - restart_policy: "never" (default), "always", "on-failure"
+    - max_restarts: maximum number of restarts (default: 3)
+    - min_backoff: minimum backoff in seconds (default: 0.1)
+    - max_backoff: maximum backoff in seconds (default: 30.0)
+
     Example:
-        @as_actor
+        @as_actor(restart_policy="on-failure", max_restarts=5)
         class Counter:
-            def __init__(self, init_value=0):
-                self.value = init_value
-
-            def increment(self, n=1):
-                self.value += n
-                return self.value
-
-        # Local creation
-        counter = await Counter.local(system, init_value=10)
-
-        # Remote creation
-        counter = await Counter.remote(system, init_value=10)
-
-        # Call
-        result = await counter.increment(5)
+            ...
     """
-    return ActorClass(cls)
+
+    def wrapper(cls):
+        return ActorClass(
+            cls,
+            restart_policy=restart_policy,
+            max_restarts=max_restarts,
+            min_backoff=min_backoff,
+            max_backoff=max_backoff,
+        )
+
+    if cls is None:
+        return wrapper
+
+    return wrapper(cls)
 
 
 # ============================================================================

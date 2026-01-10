@@ -254,9 +254,12 @@ mod error_tests {
         let result: Result<StateResponse, _> = actor_ref.ask(ErrorMessage).await;
         assert!(result.is_err());
 
-        // Actor should still be alive after error
-        let response: Pong = actor_ref.ask(Ping { value: 1 }).await.unwrap();
-        assert_eq!(response.result, 1);
+        // With the supervision model, errors cause the actor to crash
+        // (unless supervision is configured to restart it)
+        // So subsequent messages will fail with "mailbox closed"
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let result2: Result<Pong, _> = actor_ref.ask(Ping { value: 1 }).await;
+        assert!(result2.is_err(), "Actor should be dead after error");
 
         let _ = system.shutdown().await;
     }

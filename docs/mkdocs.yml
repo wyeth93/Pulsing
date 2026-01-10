@@ -89,6 +89,7 @@ plugins:
             Semantics: 语义与保证
             Actor System: Actor 系统
             Remote Actors: 远程 Actor
+            Security: 安全
             Agent: Agent 框架
             Overview: 概述
             AutoGen: AutoGen
@@ -123,6 +124,7 @@ nav:
     - Architecture: guide/architecture.md
     - Actor System: guide/actor_system.md
     - Remote Actors: guide/remote_actors.md
+    - Security: guide/security.md
     - Distributed Queue: guide/queue.md
     - Semantics: guide/semantics.md
   - Agent:

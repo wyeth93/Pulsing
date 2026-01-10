@@ -8,6 +8,7 @@ use crate::cluster::{
     GossipCluster, GossipConfig, GossipMessage, MemberInfo, MemberStatus, NamedActorInfo,
 };
 use crate::metrics::{metrics, SystemMetrics as PrometheusMetrics};
+use crate::supervision::SupervisionSpec;
 use crate::system_actor::{
     BoxedActorFactory, SystemActor, SystemRef, SYSTEM_ACTOR_LOCAL_NAME, SYSTEM_ACTOR_PATH,
 };
@@ -132,6 +133,8 @@ pub struct SpawnOptions {
     pub mailbox_capacity: Option<usize>,
     /// Whether this actor is public (can be resolved by name across cluster)
     pub public: bool,
+    /// Supervision specification (restart policy)
+    pub supervision: SupervisionSpec,
 }
 
 impl SpawnOptions {
@@ -149,6 +152,12 @@ impl SpawnOptions {
     /// Set whether actor is public
     pub fn public(mut self, public: bool) -> Self {
         self.public = public;
+        self
+    }
+
+    /// Set supervision specification
+    pub fn supervision(mut self, supervision: SupervisionSpec) -> Self {
+        self.supervision = supervision;
         self
     }
 }
@@ -449,6 +458,28 @@ impl ActorSystem {
     where
         A: Actor,
     {
+        // Wrap actor in a factory that only works once
+        let mut actor_opt = Some(actor);
+        let factory = move || {
+            actor_opt
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Actor cannot be restarted (spawned as instance)"))
+        };
+
+        self.spawn_factory(name, factory, options).await
+    }
+
+    /// Spawn an actor using a factory function (enables supervision restarts)
+    pub async fn spawn_factory<F, A>(
+        &self,
+        name: impl AsRef<str>,
+        factory: F,
+        options: SpawnOptions,
+    ) -> anyhow::Result<ActorRef>
+    where
+        F: FnMut() -> anyhow::Result<A> + Send + 'static,
+        A: Actor,
+    {
         let name = name.as_ref();
 
         // Check for duplicate
@@ -466,7 +497,9 @@ impl ActorSystem {
         let (sender, receiver) = mailbox.split();
 
         let stats = Arc::new(ActorStats::default());
-        let metadata = actor.metadata();
+        // We can't get metadata from factory without creating an instance,
+        // so we start with empty metadata. It could be updated later if we wanted.
+        let metadata = HashMap::new();
 
         // Create context
         let ctx = ActorContext::new(actor_id);
@@ -475,8 +508,12 @@ impl ActorSystem {
         let stats_clone = stats.clone();
         let cancel = self.cancel_token.clone();
         let actor_id_for_log = actor_id;
+        let supervision = options.supervision.clone();
+
         let join_handle = tokio::spawn(async move {
-            let reason = run_actor_loop(actor, receiver, ctx, cancel, stats_clone).await;
+            let reason =
+                run_supervision_loop(factory, receiver, ctx, cancel, stats_clone, supervision)
+                    .await;
             tracing::debug!(actor_id = ?actor_id_for_log, reason = ?reason, "Actor stopped");
         });
 
@@ -521,6 +558,30 @@ impl ActorSystem {
     where
         A: Actor,
     {
+        // Wrap actor in a factory that only works once
+        let mut actor_opt = Some(actor);
+        let factory = move || {
+            actor_opt
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Actor cannot be restarted (spawned as instance)"))
+        };
+
+        self.spawn_named_factory(path, local_name, factory, options)
+            .await
+    }
+
+    /// Spawn a named actor using a factory function
+    pub async fn spawn_named_factory<F, A>(
+        &self,
+        path: ActorPath,
+        local_name: impl AsRef<str>,
+        factory: F,
+        options: SpawnOptions,
+    ) -> anyhow::Result<ActorRef>
+    where
+        F: FnMut() -> anyhow::Result<A> + Send + 'static,
+        A: Actor,
+    {
         let local_name = local_name.as_ref();
 
         // Check for duplicate local name
@@ -549,7 +610,7 @@ impl ActorSystem {
         let (sender, receiver) = mailbox.split();
 
         let stats = Arc::new(ActorStats::default());
-        let metadata = actor.metadata();
+        let metadata = HashMap::new();
 
         // Create context
         let ctx = ActorContext::new(actor_id);
@@ -558,9 +619,12 @@ impl ActorSystem {
         let stats_clone = stats.clone();
         let cancel = self.cancel_token.clone();
         let actor_id_for_log = actor_id;
+        let supervision = options.supervision.clone();
 
         let join_handle = tokio::spawn(async move {
-            let reason = run_actor_loop(actor, receiver, ctx, cancel, stats_clone).await;
+            let reason =
+                run_supervision_loop(factory, receiver, ctx, cancel, stats_clone, supervision)
+                    .await;
             tracing::debug!(actor_id = ?actor_id_for_log, reason = ?reason, "Actor stopped");
         });
 
@@ -949,16 +1013,16 @@ impl ActorSystemRef for ActorSystem {
     }
 }
 
-/// Actor message loop - returns the reason for stopping
-async fn run_actor_loop<A: Actor>(
+/// Actor instance loop - runs a single instance of an actor
+async fn run_actor_instance<A: Actor>(
     mut actor: A,
-    mut receiver: mpsc::Receiver<Envelope>,
-    mut ctx: ActorContext,
+    receiver: &mut mpsc::Receiver<Envelope>,
+    ctx: &mut ActorContext,
     cancel: CancellationToken,
     stats: Arc<ActorStats>,
 ) -> StopReason {
     // Call on_start
-    if let Err(e) = actor.on_start(&mut ctx).await {
+    if let Err(e) = actor.on_start(ctx).await {
         tracing::error!(actor_id = ?ctx.id(), error = %e, "Actor start error");
         stats.inc_stop();
         return StopReason::Failed(e.to_string());
@@ -972,11 +1036,15 @@ async fn run_actor_loop<A: Actor>(
                         stats.inc_message();
                         let (message, responder) = envelope.into_parts();
 
-                        match actor.receive(message, &mut ctx).await {
-                            Ok(response) => responder.send(Ok(response)),
+                        match actor.receive(message, ctx).await {
+                            Ok(response) => {
+                                let _ = responder.send(Ok(response));
+                            },
                             Err(e) => {
                                 tracing::error!(actor_id = ?ctx.id(), error = %e, "Actor error");
-                                responder.send(Err(anyhow::anyhow!("Handler error: {}", e)));
+                                let _ = responder.send(Err(anyhow::anyhow!("Handler error: {}", e)));
+                                // Actor crashes on error - supervision will decide whether to restart
+                                return StopReason::Failed(e.to_string());
                             }
                         }
                     }
@@ -994,7 +1062,7 @@ async fn run_actor_loop<A: Actor>(
 
     // Cleanup
     stats.inc_stop();
-    if let Err(e) = actor.on_stop(&mut ctx).await {
+    if let Err(e) = actor.on_stop(ctx).await {
         tracing::warn!(actor_id = ?ctx.id(), error = %e, "Actor stop error");
         // If on_stop fails, mark as failed
         if matches!(stop_reason, StopReason::Normal) {
@@ -1003,6 +1071,89 @@ async fn run_actor_loop<A: Actor>(
     }
 
     stop_reason
+}
+
+/// Supervision loop - manages actor restarts
+async fn run_supervision_loop<F, A>(
+    mut factory: F,
+    mut receiver: mpsc::Receiver<Envelope>,
+    mut ctx: ActorContext,
+    cancel: CancellationToken,
+    stats: Arc<ActorStats>,
+    spec: SupervisionSpec,
+) -> StopReason
+where
+    F: FnMut() -> anyhow::Result<A> + Send + 'static,
+    A: Actor,
+{
+    let mut restarts = 0;
+    // Track restarts for windowing if needed (timestamp of restart)
+    let mut restart_timestamps: Vec<std::time::Instant> = Vec::new();
+
+    loop {
+        // Create actor instance
+        let actor = match factory() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!(actor_id = ?ctx.id(), error = %e, "Failed to create actor instance");
+                return StopReason::Failed(format!("Factory error: {}", e));
+            }
+        };
+
+        // Run actor instance
+        let reason = run_actor_instance(
+            actor,
+            &mut receiver,
+            &mut ctx,
+            cancel.clone(),
+            stats.clone(),
+        )
+        .await;
+
+        // Check if we should restart
+        let is_failure = matches!(reason, StopReason::Failed(_));
+        if !spec.policy.should_restart(is_failure) {
+            return reason;
+        }
+
+        if matches!(reason, StopReason::SystemShutdown | StopReason::Killed) {
+            return reason;
+        }
+
+        // Check max restarts
+        restarts += 1;
+
+        // Prune old timestamps if window is set
+        if let Some(window) = spec.restart_window {
+            let now = std::time::Instant::now();
+            restart_timestamps.push(now);
+            restart_timestamps.retain(|&t| now.duration_since(t) <= window);
+
+            if restart_timestamps.len() as u32 > spec.max_restarts {
+                tracing::error!(actor_id = ?ctx.id(), "Max restarts ({}) exceeded within window {:?}", spec.max_restarts, window);
+                return reason;
+            }
+        } else {
+            // Absolute count
+            if restarts > spec.max_restarts {
+                tracing::error!(actor_id = ?ctx.id(), "Max restarts ({}) exceeded", spec.max_restarts);
+                return reason;
+            }
+        }
+
+        tracing::info!(
+            actor_id = ?ctx.id(),
+            reason = ?reason,
+            restarts = restarts,
+            "Restarting actor..."
+        );
+
+        // Backoff
+        let backoff = spec.backoff.duration(restarts - 1);
+        if !backoff.is_zero() {
+            tokio::time::sleep(backoff).await;
+        }
+    }
 }
 
 /// Unified message handler for HTTP/2 transport
