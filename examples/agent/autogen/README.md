@@ -17,7 +17,6 @@
 演示 PulsingRuntime 与 AutoGen SingleThreadedAgentRuntime 的兼容性。
 
 ```bash
-# 运行
 python simple.py
 ```
 
@@ -26,6 +25,18 @@ python simple.py
 ### distributed.py - 分布式模式
 
 演示多节点分布式部署。
+
+**方式 1: 使用启动脚本（推荐）**
+
+```bash
+# 一键启动 3 个进程，自动组网
+./run_distributed.sh --manual
+
+# 或使用 torchrun
+./run_distributed.sh
+```
+
+**方式 2: 手动启动多个终端**
 
 ```bash
 # 终端 1: 启动 Writer Agent
@@ -38,7 +49,13 @@ python distributed.py editor
 python distributed.py manager
 ```
 
-或者单机测试所有功能：
+**方式 3: 使用 torchrun**
+
+```bash
+torchrun --nproc_per_node=3 distributed.py
+```
+
+**方式 4: 单机测试**
 
 ```bash
 python distributed.py standalone

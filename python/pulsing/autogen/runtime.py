@@ -112,7 +112,9 @@ class PulsingRuntime:
         # 创建 Pulsing ActorSystem
         if self._addr:
             # 分布式模式
-            config = SystemConfig.with_addr(self._addr, self._seeds)
+            config = SystemConfig.with_addr(self._addr)
+            if self._seeds:
+                config = config.with_seeds(self._seeds)
         else:
             # 单机模式
             config = SystemConfig.standalone()
@@ -211,11 +213,48 @@ class PulsingRuntime:
         response = await actor_ref.ask(envelope)
         
         # 处理响应
+        response = self._deserialize_response(response)
+        
+        # 如果是我们的 AutoGen 响应格式
         if isinstance(response, dict) and "__autogen_response__" in response:
             if "__error__" in response:
                 raise RuntimeError(response["__error__"])
             return response.get("result")
         
+        # 直接返回
+        return response
+    
+    def _deserialize_response(self, response: Any) -> Any:
+        """反序列化响应"""
+        import pickle
+        
+        # 1. 如果是 Pulsing Message 对象
+        if hasattr(response, 'msg_type') and hasattr(response, 'payload'):
+            msg_type = response.msg_type
+            payload = response.payload
+            
+            # 如果 msg_type 为空，说明是 pickled Python 对象
+            if not msg_type and isinstance(payload, bytes):
+                try:
+                    return pickle.loads(payload)
+                except Exception:
+                    pass
+            
+            # 如果有 msg_type，尝试 to_json
+            if hasattr(response, 'to_json'):
+                try:
+                    return response.to_json()
+                except Exception:
+                    pass
+        
+        # 2. 如果是 bytes，尝试 unpickle
+        if isinstance(response, bytes):
+            try:
+                return pickle.loads(response)
+            except Exception:
+                pass
+        
+        # 3. 直接返回
         return response
     
     async def publish_message(
@@ -286,8 +325,16 @@ class PulsingRuntime:
         agent_factory: Callable[[], T | Awaitable[T]],
         *,
         expected_class: type[T] | None = None,
+        eager: bool = True,  # 立即创建 Agent 实例
     ) -> Any:  # AgentType
-        """注册 Agent 工厂"""
+        """注册 Agent 工厂
+        
+        Args:
+            type: Agent 类型名称
+            agent_factory: 创建 Agent 的工厂函数
+            expected_class: 预期的 Agent 类型 (用于验证)
+            eager: 是否立即创建 Agent 实例 (分布式模式需要 True)
+        """
         agent_type = type.type if hasattr(type, 'type') else str(type)
         
         if agent_type in self._agent_factories:
@@ -295,6 +342,10 @@ class PulsingRuntime:
         
         self._agent_factories[agent_type] = agent_factory
         logger.debug(f"Registered agent factory: {agent_type}")
+        
+        # 立即创建实例（分布式模式下必须，否则其他节点无法发现）
+        if eager and self._running:
+            await self._ensure_agent(agent_type, "default")
         
         # 返回 AgentType (兼容 AutoGen)
         try:
@@ -449,12 +500,25 @@ class PulsingRuntime:
     # ========================================================================
     
     async def _ensure_agent(self, agent_type: str, agent_key: str = "default") -> None:
-        """确保 Agent 已创建"""
+        """确保 Agent 可用 (本地或远程)"""
         full_key = f"{agent_type}/{agent_key}"
         
-        if full_key in self._instantiated_agents:
+        # 1. 检查是否已有本地引用
+        if full_key in self._agent_refs:
             return
         
+        # 2. 尝试在集群中查找远程 Agent
+        if self.is_distributed:
+            try:
+                actor_ref = await self._system.resolve_named(full_key)
+                if actor_ref:
+                    self._agent_refs[full_key] = actor_ref
+                    logger.debug(f"Found remote agent: {full_key}")
+                    return
+            except Exception as e:
+                logger.debug(f"Agent '{full_key}' not found in cluster: {e}")
+        
+        # 3. 如果本地有工厂，则创建本地实例
         if agent_type not in self._agent_factories:
             raise LookupError(f"Agent type '{agent_type}' not registered")
         
@@ -483,7 +547,7 @@ class PulsingRuntime:
         self._instantiated_agents[full_key] = agent
         self._agent_refs[full_key] = actor_ref
         
-        logger.debug(f"Created agent: {full_key}")
+        logger.debug(f"Created local agent: {full_key}")
 
 
 # 导入包装器
