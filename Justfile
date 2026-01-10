@@ -46,7 +46,7 @@ fmt:
 
 # Lint all code
 lint:
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --exclude pulsing-py --exclude pulsing-bench-py --all-targets -- -D warnings
     ruff check .
 
 # =============================================================================

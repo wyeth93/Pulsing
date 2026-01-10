@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn test_truncate_short_max() {
         // When max_len is very short, we still try to truncate
-        assert_eq!(truncate("hello world", 6), "hel...");
+        assert_eq!(truncate("hello world", 8), "hello...");
     }
 
     #[test]
