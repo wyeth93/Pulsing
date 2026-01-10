@@ -1399,3 +1399,124 @@ mod tracing_tests {
             .is_empty());
     }
 }
+
+// ============================================================================
+// TLS Tests (requires `tls` feature)
+// ============================================================================
+
+#[cfg(feature = "tls")]
+mod tls_tests {
+    use super::*;
+    use pulsing_actor::transport::http2::TlsConfig;
+
+    /// Test TLS configuration creation from passphrase
+    #[test]
+    fn test_tls_config_from_passphrase() {
+        let config = TlsConfig::from_passphrase("test-cluster-password");
+        assert!(config.is_ok(), "TLS config creation failed: {:?}", config);
+    }
+
+    /// Test that same passphrase produces deterministic CA
+    #[test]
+    fn test_tls_deterministic_ca() {
+        let config1 = TlsConfig::from_passphrase("deterministic-test-password").unwrap();
+        let config2 = TlsConfig::from_passphrase("deterministic-test-password").unwrap();
+
+        // Both should have the same passphrase hash
+        assert_eq!(config1.passphrase_hash(), config2.passphrase_hash());
+    }
+
+    /// Test that different passphrase produces different CA
+    #[test]
+    fn test_tls_different_passphrase() {
+        let config1 = TlsConfig::from_passphrase("password-one").unwrap();
+        let config2 = TlsConfig::from_passphrase("password-two").unwrap();
+
+        // Different passwords should have different hashes
+        assert_ne!(config1.passphrase_hash(), config2.passphrase_hash());
+    }
+
+    /// Test TLS-enabled HTTP/2 server and client communication
+    #[tokio::test]
+    async fn test_tls_server_client_communication() {
+        let tls_config = TlsConfig::from_passphrase("test-cluster-tls").unwrap();
+
+        let handler = Arc::new(TestHandler::new());
+        let cancel = CancellationToken::new();
+
+        // Create HTTP/2 config with TLS
+        let http2_config = Http2Config::default().tls_config(tls_config.clone());
+
+        // Start TLS server
+        let server = Http2Server::new(
+            "127.0.0.1:0".parse().unwrap(),
+            handler.clone(),
+            http2_config.clone(),
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+
+        let addr = server.local_addr();
+
+        // Create TLS client with same passphrase
+        let client = Http2Client::new(http2_config);
+
+        // Send request over TLS
+        let response = client
+            .ask(addr, "/actors/test", "test-msg", b"hello tls".to_vec())
+            .await;
+
+        // Should succeed
+        assert!(response.is_ok(), "TLS request failed: {:?}", response);
+
+        let body = response.unwrap();
+        let response_str = String::from_utf8_lossy(&body);
+        assert!(
+            response_str.contains("hello tls"),
+            "Response should contain original message"
+        );
+
+        cancel.cancel();
+    }
+
+    /// Test that different passphrase fails TLS handshake
+    #[tokio::test]
+    async fn test_tls_different_passphrase_fails() {
+        let server_tls = TlsConfig::from_passphrase("server-password").unwrap();
+        let client_tls = TlsConfig::from_passphrase("wrong-password").unwrap();
+
+        let handler = Arc::new(TestHandler::new());
+        let cancel = CancellationToken::new();
+
+        // Start TLS server
+        let server_config = Http2Config::default().tls_config(server_tls);
+        let server = Http2Server::new(
+            "127.0.0.1:0".parse().unwrap(),
+            handler,
+            server_config,
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+
+        let addr = server.local_addr();
+
+        // Create client with WRONG passphrase
+        let client_config = Http2Config::default().tls_config(client_tls);
+        let client = Http2Client::new(client_config);
+
+        // Request should fail due to TLS handshake failure
+        let response = client
+            .ask(addr, "/actors/test", "test", b"test".to_vec())
+            .await;
+
+        // Should fail
+        assert!(
+            response.is_err(),
+            "Request with different passphrase should fail"
+        );
+
+        cancel.cancel();
+    }
+}

@@ -9,11 +9,13 @@ repository = "https://github.com/reiase/pulsing"
 keywords = ["actor", "distributed", "cluster", "gossip"]
 
 [features]
-default = []
+default = ["tls"]
 # Enable integration tests that require a running cluster
 integration = []
 # Enable OTLP exporter for sending traces to Jaeger/Tempo
 otlp = ["opentelemetry-otlp"]
+# Enable TLS support with passphrase-derived certificates
+tls = ["dep:rustls", "dep:tokio-rustls", "dep:rcgen", "dep:ring", "dep:rustls-pemfile", "dep:time"]
 
 [dependencies]
 # Async runtime
@@ -54,6 +56,14 @@ rand = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
+
+# TLS (optional)
+rustls = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

@@ -338,11 +338,81 @@ impl Http2Client {
                 .map_err(|_| anyhow::anyhow!("Connection timeout"))?
                 .map_err(|e| anyhow::anyhow!("Failed to connect: {}", e))?;
 
-        let io = TokioIo::new(tcp_stream);
-
-        // Build HTTP/2 connection with streaming body type
+        // Build HTTP/2 connection with streaming body type - with or without TLS
         type StreamingBody =
             StreamBody<tokio_stream::wrappers::ReceiverStream<Result<Frame<Bytes>, Infallible>>>;
+
+        #[cfg(feature = "tls")]
+        if let Some(ref tls_config) = self.config.tls {
+            // TLS mode: wrap TCP stream with TLS
+            let server_name = addr.ip().to_string();
+            let tls_stream = tls_config.connect(tcp_stream, &server_name).await?;
+            let io = TokioIo::new(tls_stream);
+            let (mut sender, conn): (http2::SendRequest<StreamingBody>, _) =
+                http2::handshake(TokioExecutor::new(), io)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("HTTP/2 TLS handshake failed: {}", e))?;
+
+            // Spawn connection driver for TLS
+            let cancel = self.cancel.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    result = conn => {
+                        if let Err(e) = result {
+                            tracing::debug!(error = %e, "TLS streaming connection ended");
+                        }
+                    }
+                    _ = cancel.cancelled() => {
+                        tracing::debug!("TLS streaming connection cancelled");
+                    }
+                }
+            });
+
+            // Complete the streaming request (TLS path)
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(32);
+            let default_msg_type = msg_type.to_string();
+            tokio::spawn(async move {
+                let mut stream = std::pin::pin!(stream);
+                while let Some(result) = stream.next().await {
+                    let frame = match result {
+                        Ok(msg) => StreamFrame::from_message(&msg, &default_msg_type),
+                        Err(e) => StreamFrame::error(e.to_string()),
+                    };
+                    if tx.send(Ok(Frame::data(frame.to_binary()))).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = tx
+                    .send(Ok(Frame::data(StreamFrame::end().to_binary())))
+                    .await;
+            });
+
+            let body_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+            let body = StreamBody::new(body_stream);
+
+            let uri = format!("http://{}{}", addr, path);
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(&uri)
+                .header(headers::MESSAGE_MODE, MessageMode::Ask.as_str())
+                .header(headers::MESSAGE_TYPE, msg_type)
+                .header(headers::REQUEST_TYPE, RequestType::Stream.as_str())
+                .header(TRACEPARENT_HEADER, trace_ctx.to_traceparent())
+                .header("content-type", "application/octet-stream")
+                .body(body)
+                .map_err(|e| anyhow::anyhow!("Failed to build request: {}", e))?;
+
+            let send_future = sender.send_request(request);
+            let response = tokio::time::timeout(self.config.stream_timeout, send_future)
+                .await
+                .map_err(|_| anyhow::anyhow!("Streaming request timeout"))?
+                .map_err(|e| anyhow::anyhow!("Streaming request failed: {}", e))?;
+
+            return Ok(response);
+        }
+
+        // Plain h2c mode (no TLS or TLS feature disabled)
+        let io = TokioIo::new(tcp_stream);
         let (mut sender, conn): (http2::SendRequest<StreamingBody>, _) =
             http2::handshake(TokioExecutor::new(), io)
                 .await

@@ -657,8 +657,32 @@ impl PySystemConfig {
         })
     }
 
+    /// Enable TLS with passphrase-derived certificates
+    ///
+    /// All nodes using the same passphrase will be able to communicate securely.
+    /// The passphrase is used to derive a shared CA certificate, enabling
+    /// automatic mutual TLS authentication.
+    ///
+    /// Example:
+    ///     config = SystemConfig.with_addr("0.0.0.0:8000").with_passphrase("my-cluster-secret")
+    #[cfg(feature = "tls")]
+    fn with_passphrase(&self, passphrase: String) -> PyResult<Self> {
+        let new_inner = self.inner.clone().with_tls(&passphrase).map_err(to_pyerr)?;
+        Ok(Self { inner: new_inner })
+    }
+
+    /// Check if TLS is enabled
+    fn is_tls_enabled(&self) -> bool {
+        self.inner.is_tls_enabled()
+    }
+
     fn __repr__(&self) -> String {
-        format!("SystemConfig(addr={})", self.inner.addr)
+        let tls_status = if self.inner.is_tls_enabled() {
+            ", tls=enabled"
+        } else {
+            ""
+        };
+        format!("SystemConfig(addr={}{})", self.inner.addr, tls_status)
     }
 }
 

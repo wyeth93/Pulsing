@@ -5,6 +5,7 @@
 //! - Connection expiration/eviction
 //! - Connection reuse optimization
 //! - Pool statistics
+//! - TLS support (when `tls` feature is enabled)
 
 use super::config::Http2Config;
 use bytes::Bytes;
@@ -395,9 +396,31 @@ impl ConnectionPool {
         // Set TCP options
         stream.set_nodelay(true)?;
 
-        let io = TokioIo::new(stream);
+        // Create HTTP/2 connection - with or without TLS
+        #[cfg(feature = "tls")]
+        if let Some(ref tls_config) = self.http2_config.tls {
+            // TLS mode: wrap TCP stream with TLS
+            let server_name = addr.ip().to_string();
+            let tls_stream = tls_config.connect(stream, &server_name).await?;
+            let io = TokioIo::new(tls_stream);
+            let (sender, conn) = http2::handshake(TokioExecutor::new(), io)
+                .await
+                .map_err(|e| anyhow::anyhow!("HTTP/2 TLS handshake failed with {}: {}", addr, e))?;
 
-        // Create HTTP/2 connection with prior knowledge (h2c)
+            // Spawn connection driver for TLS connection
+            tokio::spawn(async move {
+                if let Err(e) = conn.await {
+                    tracing::debug!(error = %e, "HTTP/2 TLS connection closed");
+                }
+            });
+
+            let mut pooled = PooledConnection::new(sender);
+            pooled.mark_used();
+            return Ok(pooled);
+        }
+
+        // Plain h2c mode (no TLS or TLS feature disabled)
+        let io = TokioIo::new(stream);
         let (sender, conn) = http2::handshake(TokioExecutor::new(), io)
             .await
             .map_err(|e| anyhow::anyhow!("HTTP/2 handshake failed with {}: {}", addr, e))?;

@@ -1,6 +1,7 @@
 //! HTTP/2 Server implementation
 //!
 //! Supports h2c (HTTP/2 over cleartext) with optional HTTP/1.1 fallback.
+//! When `tls` feature is enabled, supports TLS with passphrase-derived certificates.
 
 use super::config::Http2Config;
 use super::stream::{BinaryFrameParser, StreamFrame};
@@ -18,6 +19,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -173,6 +175,18 @@ impl Http2Server {
         config: Http2Config,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {
+        // Check if TLS is enabled
+        #[cfg(feature = "tls")]
+        if let Some(ref tls_config) = config.tls {
+            // TLS mode: accept TLS handshake first
+            let tls_stream = tls_config.accept(stream).await?;
+            let io = TokioIo::new(tls_stream);
+
+            // TLS connections always use HTTP/2 (no HTTP/1.1 fallback)
+            return Self::serve_h2_generic(io, peer_addr, handler, config, cancel).await;
+        }
+
+        // Plain TCP mode (h2c)
         let io = TokioIo::new(stream);
 
         // Try to detect HTTP/2 preface
@@ -238,6 +252,20 @@ impl Http2Server {
         config: Http2Config,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {
+        Self::serve_h2_generic(io, peer_addr, handler, config, cancel).await
+    }
+
+    /// Generic HTTP/2 server - works with any IO type (TCP or TLS)
+    async fn serve_h2_generic<I>(
+        io: TokioIo<I>,
+        peer_addr: SocketAddr,
+        handler: Arc<dyn Http2ServerHandler>,
+        config: Http2Config,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<()>
+    where
+        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let service = service_fn(move |req| {
             let handler = handler.clone();
             async move { Self::handle_request(req, handler, peer_addr).await }

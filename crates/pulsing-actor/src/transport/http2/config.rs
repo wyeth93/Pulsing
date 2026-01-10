@@ -4,8 +4,12 @@
 //! - Server settings (concurrent streams, window sizes, etc.)
 //! - Client settings (timeouts, connection pooling)
 //! - Retry policies
+//! - TLS settings (when `tls` feature is enabled)
 
 use std::time::Duration;
+
+#[cfg(feature = "tls")]
+use super::tls::TlsConfig;
 
 /// HTTP/2 transport configuration
 #[derive(Debug, Clone)]
@@ -65,6 +69,12 @@ pub struct Http2Config {
 
     /// Whether to use jitter in retry delays (default: true)
     pub retry_use_jitter: bool,
+
+    // ========== TLS Configuration (requires `tls` feature) ==========
+    /// TLS configuration for encrypted transport (default: None)
+    /// When set, all connections will use TLS with mutual authentication
+    #[cfg(feature = "tls")]
+    pub tls: Option<TlsConfig>,
 }
 
 impl Default for Http2Config {
@@ -94,6 +104,10 @@ impl Default for Http2Config {
             retry_initial_delay: Duration::from_millis(100),
             retry_max_delay: Duration::from_secs(10),
             retry_use_jitter: true,
+
+            // TLS defaults
+            #[cfg(feature = "tls")]
+            tls: None,
         }
     }
 }
@@ -236,6 +250,36 @@ impl Http2Config {
     pub fn disable_retry_jitter(mut self) -> Self {
         self.retry_use_jitter = false;
         self
+    }
+
+    /// Enable TLS with passphrase-derived certificates
+    ///
+    /// All nodes using the same passphrase will be able to communicate securely.
+    /// The passphrase is used to derive a shared CA certificate, enabling
+    /// automatic mutual TLS authentication.
+    #[cfg(feature = "tls")]
+    pub fn with_tls(mut self, passphrase: &str) -> anyhow::Result<Self> {
+        self.tls = Some(TlsConfig::from_passphrase(passphrase)?);
+        Ok(self)
+    }
+
+    /// Set TLS configuration directly
+    #[cfg(feature = "tls")]
+    pub fn tls_config(mut self, tls: TlsConfig) -> Self {
+        self.tls = Some(tls);
+        self
+    }
+
+    /// Check if TLS is enabled
+    #[cfg(feature = "tls")]
+    pub fn is_tls_enabled(&self) -> bool {
+        self.tls.is_some()
+    }
+
+    /// Check if TLS is enabled (always false when `tls` feature is not enabled)
+    #[cfg(not(feature = "tls"))]
+    pub fn is_tls_enabled(&self) -> bool {
+        false
     }
 
     /// Convert to retry config

@@ -64,12 +64,18 @@ mod retry;
 mod server;
 mod stream;
 
+#[cfg(feature = "tls")]
+mod tls;
+
 pub use client::{Http2Client, Http2ClientBuilder};
 pub use config::Http2Config;
 pub use pool::{ConnectionPool, PoolConfig, PoolStats};
 pub use retry::{RetryConfig, RetryExecutor, RetryableError};
 pub use server::{Http2Server, Http2ServerHandler};
 pub use stream::{BinaryFrameParser, StreamFrame, StreamHandle, FLAG_END, FLAG_ERROR};
+
+#[cfg(feature = "tls")]
+pub use tls::TlsConfig;
 
 use crate::actor::{ActorId, ActorPath, Message, RemoteTransport};
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};

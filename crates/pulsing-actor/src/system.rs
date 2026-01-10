@@ -107,6 +107,22 @@ impl SystemConfig {
         self.default_mailbox_capacity = capacity;
         self
     }
+
+    /// Enable TLS with passphrase-derived certificates
+    ///
+    /// All nodes using the same passphrase will be able to communicate securely.
+    /// The passphrase is used to derive a shared CA certificate, enabling
+    /// automatic mutual TLS authentication.
+    #[cfg(feature = "tls")]
+    pub fn with_tls(mut self, passphrase: &str) -> anyhow::Result<Self> {
+        self.http2_config = self.http2_config.with_tls(passphrase)?;
+        Ok(self)
+    }
+
+    /// Check if TLS is enabled
+    pub fn is_tls_enabled(&self) -> bool {
+        self.http2_config.is_tls_enabled()
+    }
 }
 
 /// Options for spawning an actor
