@@ -1,10 +1,10 @@
 """
-PulsingRuntime - 基于 Pulsing 的 AutoGen 运行时
+PulsingRuntime - 基于 Pulsing 的 AutoGen 兼容运行时
 
-设计目标:
-1. 单机和分布式使用同一套 API
-2. 完全兼容 AutoGen AgentRuntime 协议
-3. 支持位置透明的 Agent 调用
+特点:
+- 单机/分布式统一 API
+- 无需中央协调器，Gossip 自动发现
+- 内置负载均衡和故障转移
 """
 
 from __future__ import annotations
@@ -16,32 +16,11 @@ import signal
 import uuid
 from asyncio import Future, Task
 from collections import defaultdict
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    DefaultDict,
-    Dict,
-    List,
-    Mapping,
-    Sequence,
-    Set,
-    Type,
-    TypeVar,
-    cast,
-)
+from typing import Any, Awaitable, Callable, DefaultDict, Dict, Mapping, Sequence, Set, Type, TypeVar, cast
 
-from pulsing.actor import (
-    Actor,
-    ActorRef,
-    ActorSystem,
-    Message,
-    SystemConfig,
-    create_actor_system,
-)
+from pulsing.actor import Actor, ActorRef, ActorSystem, Message, SystemConfig, create_actor_system
 
 logger = logging.getLogger("pulsing.autogen")
-
 T = TypeVar("T")
 
 

@@ -1,117 +1,53 @@
 # AutoGen + Pulsing 示例
 
-本目录包含使用 Pulsing 作为 AutoGen 运行时的示例代码。
+使用 Pulsing 作为 AutoGen 运行时，**单机/分布式同一套 API**。
 
-## 概述
-
-`PulsingRuntime` 完全兼容 AutoGen 的 `AgentRuntime` 协议，可以直接替代：
-- `SingleThreadedAgentRuntime` (单机模式)
-- `GrpcWorkerAgentRuntime` (分布式模式)
-
-关键优势：**单机和分布式使用同一套 API，只需改配置**
-
-## 示例文件
-
-### simple.py - 单机模式
-
-演示 PulsingRuntime 与 AutoGen SingleThreadedAgentRuntime 的兼容性。
+## 快速开始
 
 ```bash
+# 单机模式
 python simple.py
-```
 
-输出会显示两个运行时的结果对比，验证行为一致。
-
-### distributed.py - 分布式模式
-
-演示多节点分布式部署。
-
-**方式 1: 使用启动脚本（推荐）**
-
-```bash
-# 一键启动 3 个进程，自动组网
-./run_distributed.sh --manual
-
-# 或使用 torchrun
+# 分布式模式 (torchrun)
 ./run_distributed.sh
+
+# 分布式模式 (手动)
+./run_distributed.sh --manual
 ```
 
-**方式 2: 手动启动多个终端**
+## 示例说明
 
-```bash
-# 终端 1: 启动 Writer Agent
-python distributed.py writer
-
-# 终端 2: 启动 Editor Agent
-python distributed.py editor
-
-# 终端 3: 启动 Manager 发起对话
-python distributed.py manager
-```
-
-**方式 3: 使用 torchrun**
-
-```bash
-torchrun --nproc_per_node=3 distributed.py
-```
-
-**方式 4: 单机测试**
-
-```bash
-python distributed.py standalone
-```
+| 文件 | 说明 |
+|------|------|
+| `simple.py` | 单机模式，对比 AutoGen 原生运行时 |
+| `distributed.py` | 分布式模式，Writer/Editor/Manager 多进程协作 |
+| `run_distributed.sh` | 启动脚本，支持 torchrun 和手动模式 |
 
 ## 使用方式
 
-### 单机模式
-
 ```python
 from pulsing.autogen import PulsingRuntime
 
-# 创建运行时 - 单机模式
+# 单机
 runtime = PulsingRuntime()
-await runtime.start()
 
-# 与 AutoGen 完全一样的使用方式
-await runtime.register_factory("my_agent", lambda: MyAgent())
-response = await runtime.send_message(msg, recipient=AgentId("my_agent", "default"))
-```
-
-### 分布式模式
-
-```python
-from pulsing.autogen import PulsingRuntime
-
-# 节点 1: 第一个节点
+# 分布式 - 种子节点
 runtime = PulsingRuntime(addr="0.0.0.0:8001")
 
-# 节点 2: 加入集群
-runtime = PulsingRuntime(
-    addr="0.0.0.0:8002",
-    seeds=["node1:8001"]
-)
+# 分布式 - 加入集群
+runtime = PulsingRuntime(addr="0.0.0.0:8002", seeds=["node1:8001"])
 
-# 使用方式完全一样！
+# API 与 AutoGen 完全一致
 await runtime.start()
+await runtime.register_factory("agent", MyAgent)
+response = await runtime.send_message(msg, recipient=AgentId("agent", "default"))
 ```
 
 ## 对比优势
 
-| 特性 | AutoGen SingleThreaded | AutoGen gRPC | Pulsing Runtime |
-|------|----------------------|--------------|-----------------|
-| 单机开发 | ✅ | ❌ 需要 Host | ✅ |
-| 分布式部署 | ❌ | ✅ 需要配置 | ✅ 同一 API |
-| 中央协调器 | N/A | ✅ 必须 | ❌ 不需要 |
-| 自动发现 | N/A | ❌ | ✅ Gossip |
-| 故障转移 | N/A | ❌ | ✅ Circuit Breaker |
-| K8s 部署 | N/A | 复杂 | ✅ 简单 |
-
-## 依赖安装
-
-```bash
-# 安装 Pulsing
-pip install pulsing
-
-# (可选) 安装 AutoGen 用于对比测试
-pip install autogen-core
-```
+| 特性 | AutoGen gRPC | Pulsing |
+|------|-------------|---------|
+| 中央协调器 | 必须 | 不需要 |
+| 自动发现 | ❌ | ✅ Gossip |
+| 故障转移 | ❌ | ✅ |
+| K8s 部署 | 复杂 | 简单 |

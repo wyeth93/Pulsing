@@ -1,11 +1,4 @@
-"""
-AutoGenAgentWrapper - 将 AutoGen Agent 包装为 Pulsing Actor
-
-职责:
-1. 将 AutoGen 消息格式转换为 Pulsing 消息格式
-2. 构造 MessageContext 并调用 Agent.on_message
-3. 处理响应并返回
-"""
+"""AutoGenAgentWrapper - 将 AutoGen Agent 包装为 Pulsing Actor"""
 
 from __future__ import annotations
 
