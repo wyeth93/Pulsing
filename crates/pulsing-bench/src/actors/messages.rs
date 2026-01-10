@@ -419,7 +419,10 @@ mod tests {
             SchedulerType::ConstantArrivalRate,
             SchedulerType::ConstantArrivalRate
         );
-        assert_ne!(SchedulerType::ConstantVUs, SchedulerType::ConstantArrivalRate);
+        assert_ne!(
+            SchedulerType::ConstantVUs,
+            SchedulerType::ConstantArrivalRate
+        );
     }
 
     #[test]

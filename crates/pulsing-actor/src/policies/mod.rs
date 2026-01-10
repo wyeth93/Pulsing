@@ -322,10 +322,8 @@ mod tests {
 
     #[test]
     fn test_basic_worker_with_model() {
-        let worker = BasicWorker::with_model(
-            "http://localhost:8000".to_string(),
-            "llama-7b".to_string(),
-        );
+        let worker =
+            BasicWorker::with_model("http://localhost:8000".to_string(), "llama-7b".to_string());
         assert_eq!(worker.url(), "http://localhost:8000");
         assert_eq!(worker.model_id(), "llama-7b");
     }
@@ -442,7 +440,10 @@ mod tests {
         headers.insert("content-type".to_string(), "application/json".to_string());
         headers.insert("x-request-id".to_string(), "12345".to_string());
 
-        assert_eq!(headers.get("content-type"), Some(&"application/json".to_string()));
+        assert_eq!(
+            headers.get("content-type"),
+            Some(&"application/json".to_string())
+        );
         assert_eq!(headers.get("x-request-id"), Some(&"12345".to_string()));
         assert_eq!(headers.len(), 2);
     }

@@ -456,8 +456,8 @@ mod tests {
 
     #[test]
     fn test_member_info_hash() {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
 
         let node_id = NodeId::generate();
         let addr1: SocketAddr = "127.0.0.1:8000".parse().unwrap();

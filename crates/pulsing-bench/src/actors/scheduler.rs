@@ -596,7 +596,10 @@ mod tests {
         };
 
         let scheduler = SchedulerActor::new().with_config(config.clone());
-        assert_eq!(scheduler.config.scheduler_type, SchedulerType::ConstantArrivalRate);
+        assert_eq!(
+            scheduler.config.scheduler_type,
+            SchedulerType::ConstantArrivalRate
+        );
         assert_eq!(scheduler.config.max_vus, 50);
         assert_eq!(scheduler.config.rate, Some(20.0));
     }
@@ -640,7 +643,10 @@ mod tests {
     #[test]
     fn test_tokenized_request_generator_with_prompts() {
         let token_counter = TokenCounter::estimate();
-        let prompts = vec!["Custom prompt one".to_string(), "Custom prompt two".to_string()];
+        let prompts = vec![
+            "Custom prompt one".to_string(),
+            "Custom prompt two".to_string(),
+        ];
         let gen = TokenizedRequestGenerator::new(token_counter).with_prompts(prompts);
 
         let req1 = gen.generate();
@@ -677,7 +683,10 @@ mod tests {
 
         scheduler.configure(config_msg);
 
-        assert_eq!(scheduler.config.scheduler_type, SchedulerType::ConstantArrivalRate);
+        assert_eq!(
+            scheduler.config.scheduler_type,
+            SchedulerType::ConstantArrivalRate
+        );
         assert_eq!(scheduler.config.max_vus, 100);
         assert_eq!(scheduler.config.duration, Duration::from_secs(180));
         assert_eq!(scheduler.config.rate, Some(50.0));

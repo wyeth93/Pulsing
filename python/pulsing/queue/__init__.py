@@ -13,7 +13,7 @@
 Example:
     # 使用默认内存后端
     writer = await write_queue(system, "my_queue")
-    
+
     # 使用 persisting 提供的 Lance 持久化后端
     from persisting.queue import LanceBackend
     from pulsing.queue import register_backend

@@ -314,7 +314,9 @@ async def get_bucket_ref(
             msg_data["storage_path"] = storage_path
         if backend:
             # 如果是类，传递类名（跨节点时无法序列化类）
-            msg_data["backend"] = backend if isinstance(backend, str) else backend.__name__
+            msg_data["backend"] = (
+                backend if isinstance(backend, str) else backend.__name__
+            )
         if backend_options:
             msg_data["backend_options"] = backend_options
 

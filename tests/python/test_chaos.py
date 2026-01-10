@@ -9,8 +9,10 @@ from pulsing.actor import (
     create_actor_system,
 )
 
+
 class ResilienceWorker(Actor):
     """A worker that maintains state and simulates work."""
+
     def __init__(self):
         self.processed_count = 0
 
@@ -24,12 +26,14 @@ class ResilienceWorker(Actor):
             return Message.from_json("state", {"count": self.processed_count})
         return Message.empty()
 
+
 @pytest.fixture
 async def actor_system():
     config = SystemConfig.standalone()
     system = await create_actor_system(config)
     yield system
     await system.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_actor_death_recovery(actor_system):
@@ -39,7 +43,7 @@ async def test_actor_death_recovery(actor_system):
     # 1. Spawn a worker
     worker_name = "resilient_worker"
     worker = await actor_system.spawn(worker_name, ResilienceWorker())
-    
+
     # 2. Verify it works
     resp = await worker.ask(Message.from_json("process", {}))
     assert resp.to_json()["count"] == 1
@@ -49,13 +53,13 @@ async def test_actor_death_recovery(actor_system):
         await asyncio.sleep(0.1)
         # Forcefully stop the actor
         await actor_system.stop(worker_name)
-    
+
     chaos_task = asyncio.create_task(chaos_monkey())
 
     # 4. Concurrently send messages. Expect failure at some point.
     success_count = 0
     failure_count = 0
-    
+
     try:
         # Try to send messages for 0.5s
         for _ in range(50):
@@ -65,22 +69,23 @@ async def test_actor_death_recovery(actor_system):
     except Exception:
         # We expect an exception when the actor is killed
         failure_count += 1
-    
+
     await chaos_task
 
     # 5. Assertions
     # We should have had some successes before the kill
     assert success_count > 0
     # We should have caught the failure (or at least stopped sending)
-    
+
     # 6. Recovery: Respawn the actor
-    # Note: In a real persistent system, we'd recover state. 
+    # Note: In a real persistent system, we'd recover state.
     # Here we just verify we can reclaim the name.
     new_worker = await actor_system.spawn(worker_name, ResilienceWorker())
     resp = await new_worker.ask(Message.from_json("process", {}))
-    
+
     # New actor starts from 0
     assert resp.to_json()["count"] == 1
+
 
 @pytest.mark.asyncio
 async def test_cluster_node_failure_detection(actor_system):
@@ -90,50 +95,48 @@ async def test_cluster_node_failure_detection(actor_system):
     """
     # Setup 3 nodes
     port_base = 19000
-    configs = []
     systems = []
-    
+
     # Seed node
     seed_addr = f"127.0.0.1:{port_base}"
     sys1 = await create_actor_system(SystemConfig.with_addr(seed_addr))
     systems.append(sys1)
-    
+
     # Other nodes
     for i in range(1, 3):
         addr = f"127.0.0.1:{port_base + i}"
         cfg = SystemConfig.with_addr(addr).with_seeds([seed_addr])
         sys = await create_actor_system(cfg)
         systems.append(sys)
-    
+
     # Wait for cluster formation
     await asyncio.sleep(2.0)
-    
+
     # Verify all nodes see 3 members
     for sys in systems:
         members = await sys.members()
         assert len(members) == 3
-        
+
     # KILL Node 2 (Index 1)
     victim_sys = systems[1]
     await victim_sys.shutdown()
-    
+
     # Wait for failure detection (SWIM protocol takes some time)
     # Ping interval is usually small, but failure detection might take a few seconds
     # adjusting sleep based on typical gossip settings
     await asyncio.sleep(5.0)
-    
+
     # Remaining nodes should see 2 members (or mark one as dead)
     # Note: precise behavior depends on the implementation (dead vs removed)
     # Here we check that the dead node is no longer considered "alive" or is removed.
-    
+
     alive_sys = systems[0]
     members = await alive_sys.members()
-    
+
     # The dead member should be gone OR marked effectively dead.
     # Assuming standard behavior: eventually removed or filtered.
     # If the list still contains 3, we check if we can still communicate (we shouldn't).
-    
+
     # Let's clean up remaining
     await systems[0].shutdown()
     await systems[2].shutdown()
-

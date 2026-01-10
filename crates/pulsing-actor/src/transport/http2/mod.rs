@@ -562,12 +562,8 @@ mod tests {
         let path = ActorPath::new("services/llm").unwrap();
         let cb_config = CircuitBreakerConfig::default();
 
-        let transport = Http2RemoteTransport::new_named_with_circuit_breaker(
-            client,
-            addr,
-            path,
-            cb_config,
-        );
+        let transport =
+            Http2RemoteTransport::new_named_with_circuit_breaker(client, addr, path, cb_config);
         assert_eq!(transport.path(), "/named/services/llm");
     }
 
@@ -580,7 +576,7 @@ mod tests {
 
         assert_eq!(transport.remote_addr(), addr);
         assert_eq!(transport.path(), "/actors/test_actor");
-        assert!(Arc::ptr_eq(&transport.client(), &client));
+        assert!(Arc::ptr_eq(transport.client(), &client));
     }
 
     #[tokio::test]

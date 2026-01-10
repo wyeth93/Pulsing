@@ -291,7 +291,7 @@ writer = await write_queue(system, "my_queue", backend="lance")
 from persisting.queue import PersistingBackend
 register_backend("persisting", PersistingBackend)
 writer = await write_queue(
-    system, "my_queue", 
+    system, "my_queue",
     backend="persisting",
     backend_options={"enable_wal": True, "enable_metrics": True}
 )
@@ -305,7 +305,7 @@ writer = await write_queue(
 class MyBackend:
     def __init__(self, bucket_id: int, storage_path: str, **kwargs):
         ...
-    
+
     async def put(self, record: dict) -> None: ...
     async def put_batch(self, records: list[dict]) -> None: ...
     async def get(self, limit: int, offset: int) -> list[dict]: ...
