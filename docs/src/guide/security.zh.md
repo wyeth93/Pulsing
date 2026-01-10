@@ -114,7 +114,7 @@ Pulsing 使用**确定性 CA 派生**方法：
     ```python
     # 好：高熵值
     passphrase = "aX9#mK2$nL5@pQ8&"
-    
+
     # 差：弱/可预测
     passphrase = "password123"
     ```
@@ -196,13 +196,13 @@ async def main():
     config = SystemConfig.with_addr("0.0.0.0:8000")
     if PASSPHRASE:
         config = config.with_passphrase(PASSPHRASE)
-    
+
     system = await create_actor_system(config)
-    
+
     # 生成安全计数器
     counter = await SecureCounter.local(system, init_value=0)
     await system.spawn(counter, "secure-counter", public=True)
-    
+
     print("安全计数器运行中...")
     print(f"TLS 已启用: {PASSPHRASE is not None}")
 ```

@@ -1038,11 +1038,11 @@ async fn run_actor_instance<A: Actor>(
 
                         match actor.receive(message, ctx).await {
                             Ok(response) => {
-                                let _ = responder.send(Ok(response));
-                            },
+                                responder.send(Ok(response));
+                            }
                             Err(e) => {
                                 tracing::error!(actor_id = ?ctx.id(), error = %e, "Actor error");
-                                let _ = responder.send(Err(anyhow::anyhow!("Handler error: {}", e)));
+                                responder.send(Err(anyhow::anyhow!("Handler error: {}", e)));
                                 // Actor crashes on error - supervision will decide whether to restart
                                 return StopReason::Failed(e.to_string());
                             }

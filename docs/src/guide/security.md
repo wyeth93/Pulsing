@@ -114,7 +114,7 @@ Pulsing uses a **deterministic CA derivation** approach:
     ```python
     # Good: High entropy
     passphrase = "aX9#mK2$nL5@pQ8&"
-    
+
     # Bad: Weak/predictable
     passphrase = "password123"
     ```
@@ -196,13 +196,13 @@ async def main():
     config = SystemConfig.with_addr("0.0.0.0:8000")
     if PASSPHRASE:
         config = config.with_passphrase(PASSPHRASE)
-    
+
     system = await create_actor_system(config)
-    
+
     # Spawn secure counter
     counter = await SecureCounter.local(system, init_value=0)
     await system.spawn(counter, "secure-counter", public=True)
-    
+
     print("Secure counter running...")
     print(f"TLS enabled: {PASSPHRASE is not None}")
 ```
