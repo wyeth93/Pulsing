@@ -13,6 +13,7 @@ Pulsing 是一个轻量级分布式 Actor 框架，专为 LLM 推理服务设计
 - **Gossip 协议发现**：内置 SWIM 协议实现节点发现和故障检测
 - **位置透明**：ActorRef 支持本地和远程 Actor 的统一访问
 - **流式消息**：原生支持流式请求和响应
+- **Agent 框架支持**：原生集成 AutoGen 和 LangGraph，轻松实现分布式 Agent
 - **Python 绑定**：通过 PyO3 提供完整的 Python API
 
 ## 快速上手
@@ -85,6 +86,49 @@ worker = await system.resolve_named("worker")
 result = await worker.ask("do_work")
 ```
 
+## Agent 框架集成
+
+Pulsing 原生支持主流 Agent 框架，**不替代，而是增强**——用户代码几乎无需改动。
+
+### AutoGen
+
+`PulsingRuntime` 替代 AutoGen 默认运行时，实现分布式 Agent：
+
+```python
+from pulsing.autogen import PulsingRuntime
+
+runtime = PulsingRuntime(addr="0.0.0.0:8000")  # 分布式模式
+await runtime.start()
+await runtime.register_factory("agent", lambda: MyAgent())
+await runtime.send_message("Hello", AgentId("agent", "default"))
+```
+
+### LangGraph
+
+`with_pulsing()` 一行代码实现分布式：
+
+```python
+from pulsing.langgraph import with_pulsing
+
+app = graph.compile()
+distributed_app = with_pulsing(
+    app,
+    node_mapping={"llm": "langgraph_node_llm"},  # LLM → GPU 服务器
+    seeds=["gpu-server:8001"],
+)
+await distributed_app.ainvoke(inputs)
+```
+
+### 运行示例
+
+```bash
+# AutoGen 分布式示例
+cd examples/agent/autogen && ./run_distributed.sh
+
+# LangGraph 分布式示例
+cd examples/agent/langgraph && ./run_distributed.sh
+```
+
 ## CLI 命令
 
 Pulsing 提供基于 Actor System 的 LLM 推理服务：
@@ -115,14 +159,19 @@ Pulsing/
 ├── crates/                   # Rust crates
 │   ├── pulsing-actor/        # Actor System 核心库
 │   ├── pulsing-bench/        # 性能基准测试工具
-│   ├── pulsing-bench-py/     # Benchmark Python 绑定
 │   └── pulsing-py/           # PyO3 核心绑定
 ├── python/pulsing/           # Python 包
 │   ├── actor/                # Actor System Python API
 │   ├── actors/               # LLM serving actors
+│   ├── autogen/              # AutoGen 集成 (PulsingRuntime)
+│   ├── langgraph/            # LangGraph 集成 (with_pulsing)
 │   └── cli/                  # 命令行工具
-├── examples/                 # 示例代码
-└── tests/                    # 测试
+├── examples/
+│   ├── agent/                # Agent 框架示例
+│   │   ├── autogen/          # AutoGen 分布式示例
+│   │   └── langgraph/        # LangGraph 分布式示例
+│   └── python/               # 基础示例
+└── docs/                     # 文档
 ```
 
 ## 构建

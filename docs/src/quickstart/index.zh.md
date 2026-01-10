@@ -1,16 +1,40 @@
-# 入门指南
+# 快速开始
 
-本指南介绍 Pulsing 的核心概念——一个用于构建可扩展 AI 系统的轻量级分布式 Actor 框架。
+本指南帮助您快速安装 Pulsing 并掌握核心概念。
+
+## 安装
+
+### 前置条件
+
+- **Python 3.10+**
+- **Rust 工具链** (用于构建原生扩展)
+- **Linux/macOS**
+
+### 从源码安装
+
+```bash
+git clone https://github.com/reiase/pulsing.git
+cd pulsing
+
+# 安装 Rust (如果尚未安装)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 构建和安装
+pip install maturin
+maturin develop
+```
+
+### 从 PyPI 安装
+
+```bash
+pip install pulsing
+```
 
 ---
 
 ## 什么是 Actor？
 
-Actor 是：
-
-- 具有私有状态的隔离计算单元
-- 顺序处理消息的消息处理器
-- 位置透明：本地和远程 Actor 使用相同的 API
+Actor 是具有私有状态的隔离计算单元，顺序处理消息，本地和远程 Actor 使用相同的 API。
 
 ```mermaid
 graph LR
@@ -25,27 +49,17 @@ graph LR
 
 ---
 
-## 安装
-
-```bash
-pip install pulsing
-```
-
----
-
 ## 第一个 Actor（30秒）
 
 ```python
 import asyncio
 from pulsing.actor import Actor, SystemConfig, create_actor_system
 
-
 class PingPong(Actor):
     async def receive(self, msg):
         if msg == "ping":
             return "pong"
         return f"echo: {msg}"
-
 
 async def main():
     system = await create_actor_system(SystemConfig.standalone())
@@ -56,11 +70,10 @@ async def main():
 
     await system.shutdown()
 
-
 asyncio.run(main())
 ```
 
-就是这样！**任意 Python 对象**都可以作为消息——字符串、字典、列表或自定义类。
+**任意 Python 对象**都可以作为消息——字符串、字典、列表或自定义类。
 
 ---
 
@@ -77,59 +90,16 @@ class Counter(Actor):
             return self.value
         if msg == "get":
             return self.value
-
-
-async def main():
-    system = await create_actor_system(SystemConfig.standalone())
-    counter = await system.spawn("counter", Counter())
-
-    print(await counter.ask("inc"))  # 1
-    print(await counter.ask("inc"))  # 2
-    print(await counter.ask("get"))  # 2
-
-    await system.shutdown()
 ```
 
 ---
 
-## 字典消息（最常用）
+## @as_actor 装饰器
 
-对于结构化数据，使用字典：
-
-```python
-class Calculator(Actor):
-    def __init__(self):
-        self.result = 0
-
-    async def receive(self, msg):
-        if isinstance(msg, dict):
-            op = msg.get("op")
-            n = msg.get("n", 0)
-
-            if op == "add":
-                self.result += n
-            elif op == "mul":
-                self.result *= n
-            elif op == "reset":
-                self.result = 0
-
-            return {"result": self.result}
-
-
-# 使用
-resp = await calc.ask({"op": "add", "n": 10})  # {'result': 10}
-resp = await calc.ask({"op": "mul", "n": 2})   # {'result': 20}
-```
-
----
-
-## @as_actor 装饰器（方法调用风格）
-
-想要更面向对象的 API，使用 `@as_actor`：
+更面向对象的 API：
 
 ```python
-from pulsing.actor import as_actor, create_actor_system, SystemConfig
-
+from pulsing.actor import as_actor
 
 @as_actor
 class Counter:
@@ -140,75 +110,15 @@ class Counter:
         self.value += n
         return self.value
 
-    def get(self):
-        return self.value
-
-
 async def main():
     system = await create_actor_system(SystemConfig.standalone())
     counter = await Counter.local(system, initial=10)
-
     print(await counter.inc(5))   # 15
-    print(await counter.get())    # 15
-
-    await system.shutdown()
 ```
 
 ---
 
-## Ask vs Tell
-
-| 模式 | 描述 | 使用场景 |
-|------|------|----------|
-| `ask` | 发送并等待响应 | 需要结果 |
-| `tell` | 发后即忘 | 仅副作用、日志 |
-
-```python
-# ask - 等待响应
-result = await actor.ask("ping")
-
-# tell - 不等待
-await actor.tell("log this event")
-```
-
----
-
-## 流式响应
-
-用于持续输出数据（LLM token、进度更新等）：
-
-```python
-from pulsing.actor import StreamMessage
-
-@as_actor
-class TokenGenerator:
-    async def generate(self, prompt: str):
-        stream_msg, writer = StreamMessage.create("tokens")
-
-        async def produce():
-            for i, word in enumerate(prompt.split()):
-                await writer.write({"token": word, "index": i})  # 自动序列化
-            await writer.close()
-
-        asyncio.create_task(produce())
-        return stream_msg
-
-
-# 消费流
-response = await generator.generate("Hello world from Pulsing")
-async for chunk in response.stream_reader():
-    print(chunk["token"])  # chunk 已经是 Python dict
-```
-
-**核心特性：**
-
-- `writer.write(obj)` - 写入任意 Python 对象（自动 pickle）
-- `stream_reader()` - 迭代接收 Python 对象（自动反序列化）
-- 有界缓冲区，支持背压
-
----
-
-## 集群配置
+## 集群通信
 
 Pulsing 使用 SWIM gossip 协议——无需外部服务！
 
@@ -216,36 +126,34 @@ Pulsing 使用 SWIM gossip 协议——无需外部服务！
 ```python
 config = SystemConfig.with_addr("0.0.0.0:8000")
 system = await create_actor_system(config)
-await system.spawn("worker", MyActor(), public=True)  # public = 对集群可见
+await system.spawn("worker", MyActor(), public=True)
 ```
 
 **节点 2（加入集群）：**
 ```python
-config = SystemConfig.with_addr("0.0.0.0:8001").with_seeds(["192.168.1.100:8000"])
+config = SystemConfig.with_addr("0.0.0.0:8001").with_seeds(["node1:8000"])
 system = await create_actor_system(config)
 
-# 查找并调用远程 actor（API 完全相同！）
 worker = await system.resolve_named("worker")
-result = await worker.ask("do_work")
+result = await worker.ask("do_work")  # API 完全相同！
 ```
 
 ---
 
-## 总结
+## 核心概念
 
 | 概念 | 描述 |
 |------|------|
 | **Actor** | 具有私有状态的隔离单元 |
-| **消息** | 任意 Python 对象（字符串、字典、列表等） |
+| **消息** | 任意 Python 对象 |
 | **ask/tell** | 请求-响应 / 发后即忘 |
-| **流式响应** | 持续数据流，自动序列化 |
-| **@as_actor** | 将任何类转换为支持方法调用的 Actor |
-| **集群** | 使用 SWIM 协议自动发现 |
+| **@as_actor** | 方法调用风格的 Actor |
+| **集群** | SWIM 协议自动发现 |
 
 ---
 
 ## 下一步
 
-- [Actor 指南](../guide/actors.md) - 高级模式
-- [远程 Actor](../guide/remote_actors.md) - 集群详情
-- [示例](../examples/index.md) - 真实用例
+- [Actor 指南](../guide/actors.zh.md) - 高级模式
+- [Agent 框架](../agent/index.zh.md) - AutoGen 和 LangGraph 集成
+- [示例](../examples/index.zh.md) - 真实用例

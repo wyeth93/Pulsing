@@ -200,11 +200,56 @@ class LLMService:
         }
 ```
 
+## Agent 框架示例
+
+Pulsing 集成主流 Agent 框架。详见 [Agent 框架支持](../agent/index.zh.md)。
+
+### AutoGen
+
+使用 `PulsingRuntime` 替代 AutoGen 默认运行时：
+
+```python
+from pulsing.autogen import PulsingRuntime
+
+runtime = PulsingRuntime(addr="0.0.0.0:8000")
+await runtime.start()
+await runtime.register_factory("agent", lambda: MyAgent())
+await runtime.send_message("Hello", AgentId("agent", "default"))
+```
+
+运行示例：
+```bash
+cd examples/agent/autogen && ./run_distributed.sh
+```
+
+### LangGraph
+
+使用 `with_pulsing()` 实现分布式执行：
+
+```python
+from pulsing.langgraph import with_pulsing
+
+app = graph.compile()
+distributed_app = with_pulsing(
+    app,
+    node_mapping={"llm": "langgraph_node_llm"},
+    seeds=["gpu-server:8001"],
+)
+await distributed_app.ainvoke(inputs)
+```
+
+运行示例：
+```bash
+cd examples/agent/langgraph && ./run_distributed.sh
+```
+
 ## 更多示例
 
-- [Ping-Pong](ping_pong.md) - 基本 Actor 通信
-- [分布式计数器](distributed_counter.md) - 跨节点共享状态
-- [LLM 推理](llm_inference.md) - 构建推理服务
+- [Ping-Pong](ping_pong.zh.md) - 基本 Actor 通信
+- [分布式计数器](distributed_counter.zh.md) - 跨节点共享状态
+- [LLM 推理](llm_inference.zh.md) - 构建推理服务
+- [AutoGen 集成](../agent/autogen.zh.md) - 分布式 AutoGen Agent
+- [LangGraph 集成](../agent/langgraph.zh.md) - 分布式 LangGraph 工作流
 
 ## 运行示例
 

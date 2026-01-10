@@ -237,11 +237,56 @@ class LLMRouter:
         return list(zip(range(len(self.workers)), self.request_counts))
 ```
 
+## Agent Framework Examples
+
+Pulsing integrates with popular agent frameworks. See [Agent Integration](../agent/index.md) for details.
+
+### AutoGen
+
+Use `PulsingRuntime` as a drop-in replacement for AutoGen's runtime:
+
+```python
+from pulsing.autogen import PulsingRuntime
+
+runtime = PulsingRuntime(addr="0.0.0.0:8000")
+await runtime.start()
+await runtime.register_factory("agent", lambda: MyAgent())
+await runtime.send_message("Hello", AgentId("agent", "default"))
+```
+
+Run the example:
+```bash
+cd examples/agent/autogen && ./run_distributed.sh
+```
+
+### LangGraph
+
+Use `with_pulsing()` to enable distributed execution:
+
+```python
+from pulsing.langgraph import with_pulsing
+
+app = graph.compile()
+distributed_app = with_pulsing(
+    app,
+    node_mapping={"llm": "langgraph_node_llm"},
+    seeds=["gpu-server:8001"],
+)
+await distributed_app.ainvoke(inputs)
+```
+
+Run the example:
+```bash
+cd examples/agent/langgraph && ./run_distributed.sh
+```
+
 ## More Examples
 
 - [Ping-Pong](ping_pong.md) - Basic actor communication
 - [Distributed Counter](distributed_counter.md) - Shared state across nodes
 - [LLM Inference](llm_inference.md) - Building inference services
+- [AutoGen Integration](../agent/autogen.md) - Distributed AutoGen agents
+- [LangGraph Integration](../agent/langgraph.md) - Distributed LangGraph workflows
 
 ## Running Examples
 

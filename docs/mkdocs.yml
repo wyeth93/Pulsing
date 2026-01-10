@@ -81,8 +81,7 @@ plugins:
           site_name: "Pulsing 文档"
           nav_translations:
             Home: 首页
-            Installation: 安装指南
-            Getting Started: 入门指南
+            Getting Started: 快速开始
             Guide: 用户指南
             Actors: Actor 完整指南
             Architecture: 架构
@@ -90,6 +89,10 @@ plugins:
             Semantics: 语义与保证
             Actor System: Actor 系统
             Remote Actors: 远程 Actor
+            Agent: Agent 框架
+            Overview: 概述
+            AutoGen: AutoGen
+            LangGraph: LangGraph
             Examples: 示例
             Ping-Pong: Ping-Pong
             Distributed Counter: 分布式计数器
@@ -113,16 +116,19 @@ plugins:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
   - Getting Started: quickstart/index.md
   - Guide:
     - guide/index.md
     - Actors: guide/actors.md
     - Architecture: guide/architecture.md
-    - Distributed Queue: guide/queue.md
-    - Semantics: guide/semantics.md
     - Actor System: guide/actor_system.md
     - Remote Actors: guide/remote_actors.md
+    - Distributed Queue: guide/queue.md
+    - Semantics: guide/semantics.md
+  - Agent:
+    - agent/index.md
+    - AutoGen: agent/autogen.md
+    - LangGraph: agent/langgraph.md
   - Examples:
     - examples/index.md
     - Ping-Pong: examples/ping_pong.md
