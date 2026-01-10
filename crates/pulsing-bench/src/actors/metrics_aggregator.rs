@@ -906,11 +906,14 @@ mod tests {
 
     #[test]
     fn test_phase_display_data_completed() {
-        let mut stats = PhaseStats::default();
-        stats.phase_id = "test".to_string();
-        stats.phase_name = "Test Phase".to_string();
-        stats.start_time = Some(std::time::Instant::now());
-        stats.end_time = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        let stats = PhaseStats {
+            phase_id: "test".to_string(),
+            phase_name: "Test Phase".to_string(),
+            start_time: Some(now),
+            end_time: Some(now),
+            ..Default::default()
+        };
 
         let expected_duration = Duration::from_secs(60);
         let display = stats.to_display_snapshot(expected_duration);

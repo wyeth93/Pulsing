@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_estimate_tokenizer_default() {
-        let estimator = EstimateTokenizer::default();
+        let estimator = EstimateTokenizer;
         let tokens = estimator.count_tokens("test");
         assert!(tokens >= 1);
     }
