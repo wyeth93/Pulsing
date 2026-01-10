@@ -154,4 +154,74 @@ mod tests {
         ctx.cancel_token().cancel();
         assert!(ctx.is_cancelled());
     }
+
+    #[test]
+    fn test_context_node_id_none() {
+        let ctx = ActorContext::new(ActorId::local(1));
+        assert!(ctx.node_id().is_none());
+    }
+
+    #[test]
+    fn test_context_multiple_actors() {
+        let ctx1 = ActorContext::new(ActorId::local(1));
+        let ctx2 = ActorContext::new(ActorId::local(2));
+        let ctx3 = ActorContext::new(ActorId::local(3));
+
+        assert_eq!(ctx1.id().local_id(), 1);
+        assert_eq!(ctx2.id().local_id(), 2);
+        assert_eq!(ctx3.id().local_id(), 3);
+    }
+
+    #[test]
+    fn test_context_cancel_token_clone() {
+        let ctx = ActorContext::new(ActorId::local(1));
+        let token = ctx.cancel_token().clone();
+
+        assert!(!ctx.is_cancelled());
+        assert!(!token.is_cancelled());
+
+        token.cancel();
+
+        assert!(ctx.is_cancelled());
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn test_context_actor_ref_no_system() {
+        let mut ctx = ActorContext::new(ActorId::local(1));
+        let target_id = ActorId::local(2);
+
+        let result = ctx.actor_ref(&target_id).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No system reference"));
+    }
+
+    #[tokio::test]
+    async fn test_context_watch_no_system() {
+        let ctx = ActorContext::new(ActorId::local(1));
+        let target_id = ActorId::local(2);
+
+        let result = ctx.watch(&target_id).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No system reference"));
+    }
+
+    #[tokio::test]
+    async fn test_context_unwatch_no_system() {
+        let ctx = ActorContext::new(ActorId::local(1));
+        let target_id = ActorId::local(2);
+
+        let result = ctx.unwatch(&target_id).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No system reference"));
+    }
 }

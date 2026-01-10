@@ -376,6 +376,7 @@ impl Actor for ConsoleRendererActor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actors::metrics_aggregator::DisplayMessage;
 
     #[test]
     fn test_truncate() {
@@ -394,5 +395,209 @@ mod tests {
         let renderer = ConsoleRendererActor::new();
         assert!(renderer.enabled);
         assert!(!renderer.header_printed);
+    }
+
+    #[test]
+    fn test_truncate_exact_length() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_empty() {
+        assert_eq!(truncate("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_short_max() {
+        // When max_len is very short, we still try to truncate
+        assert_eq!(truncate("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn test_progress_bar_zero() {
+        let bar = create_progress_bar(0.0);
+        assert!(bar.contains("0.0%"));
+        // Should have all empty blocks
+        assert!(bar.contains("░"));
+    }
+
+    #[test]
+    fn test_progress_bar_full() {
+        let bar = create_progress_bar(100.0);
+        assert!(bar.contains("100.0%"));
+        // Should have all filled blocks
+        assert!(bar.contains("█"));
+    }
+
+    #[test]
+    fn test_progress_bar_partial() {
+        let bar = create_progress_bar(75.0);
+        assert!(bar.contains("75.0%"));
+        // Should have both filled and empty blocks
+        assert!(bar.contains("█"));
+        assert!(bar.contains("░"));
+    }
+
+    #[test]
+    fn test_renderer_default() {
+        let renderer = ConsoleRendererActor::default();
+        assert!(renderer.enabled);
+        assert!(!renderer.header_printed);
+        assert!(renderer.config.is_none());
+    }
+
+    #[test]
+    fn test_renderer_with_enabled() {
+        let renderer = ConsoleRendererActor::new().with_enabled(false);
+        assert!(!renderer.enabled);
+    }
+
+    #[test]
+    fn test_renderer_disabled_display_update() {
+        let mut renderer = ConsoleRendererActor::new().with_enabled(false);
+        let update = DisplayUpdate {
+            config: Some(BenchmarkConfig::default()),
+            completed_phases: vec![],
+            current_phase: None,
+            messages: vec![],
+        };
+
+        // Should not panic even when disabled
+        renderer.handle_display_update(update);
+        // Config should not be stored when disabled
+        assert!(renderer.config.is_none());
+    }
+
+    #[test]
+    fn test_renderer_disabled_final_report() {
+        let renderer = ConsoleRendererActor::new().with_enabled(false);
+        let report = BenchmarkReport {
+            run_id: "test".to_string(),
+            config: BenchmarkConfig::default(),
+            phases: vec![],
+            start_time: "".to_string(),
+            end_time: "".to_string(),
+            total_duration_secs: 60.0,
+        };
+
+        // Should not panic when disabled
+        renderer.handle_final_report(FinalReport { report });
+    }
+
+    #[test]
+    fn test_phase_display_data_formatting() {
+        let phase = PhaseDisplayData {
+            phase_id: "phase-1".to_string(),
+            phase_name: "Test Phase".to_string(),
+            is_completed: true,
+            progress_pct: 100.0,
+            error_rate: 5.0,
+            request_rate: 50.0,
+            avg_ttft_ms: Some(100.0),
+            ttft_std_ms: Some(10.0),
+            avg_tpot_ms: Some(8.0),
+            tpot_std_ms: Some(1.5),
+            input_throughput: Some(500.0),
+            output_throughput: Some(1000.0),
+            total_throughput: Some(1500.0),
+        };
+
+        assert!(phase.is_completed);
+        assert_eq!(phase.progress_pct, 100.0);
+        assert_eq!(phase.error_rate, 5.0);
+    }
+
+    #[test]
+    fn test_phase_display_data_none_values() {
+        let phase = PhaseDisplayData {
+            phase_id: "phase-1".to_string(),
+            phase_name: "Test Phase".to_string(),
+            is_completed: false,
+            progress_pct: 50.0,
+            error_rate: 0.0,
+            request_rate: 25.0,
+            avg_ttft_ms: None,
+            ttft_std_ms: None,
+            avg_tpot_ms: None,
+            tpot_std_ms: None,
+            input_throughput: None,
+            output_throughput: None,
+            total_throughput: None,
+        };
+
+        assert!(!phase.is_completed);
+        assert!(phase.avg_ttft_ms.is_none());
+        assert!(phase.total_throughput.is_none());
+    }
+
+    #[test]
+    fn test_display_update_with_config() {
+        let mut renderer = ConsoleRendererActor::new();
+        let config = BenchmarkConfig::default();
+        let update = DisplayUpdate {
+            config: Some(config.clone()),
+            completed_phases: vec![],
+            current_phase: None,
+            messages: vec![],
+        };
+
+        renderer.handle_display_update(update);
+
+        // Config should be stored
+        assert!(renderer.config.is_some());
+        assert_eq!(renderer.config.as_ref().unwrap().url, config.url);
+    }
+
+    #[test]
+    fn test_display_update_preserves_config() {
+        let mut renderer = ConsoleRendererActor::new();
+
+        // First update with config
+        let config = BenchmarkConfig {
+            url: "http://test.com".to_string(),
+            ..Default::default()
+        };
+        renderer.handle_display_update(DisplayUpdate {
+            config: Some(config),
+            completed_phases: vec![],
+            current_phase: None,
+            messages: vec![],
+        });
+
+        // Second update without config
+        renderer.handle_display_update(DisplayUpdate {
+            config: None,
+            completed_phases: vec![],
+            current_phase: None,
+            messages: vec![],
+        });
+
+        // Config should still be preserved
+        assert!(renderer.config.is_some());
+        assert_eq!(renderer.config.as_ref().unwrap().url, "http://test.com");
+    }
+
+    #[test]
+    fn test_display_message_levels() {
+        let info_msg = DisplayMessage {
+            message: "Info message".to_string(),
+            timestamp: "12:00:00".to_string(),
+            level: "INFO".to_string(),
+        };
+        assert_eq!(info_msg.level, "INFO");
+
+        let warn_msg = DisplayMessage {
+            message: "Warning message".to_string(),
+            timestamp: "12:00:01".to_string(),
+            level: "WARN".to_string(),
+        };
+        assert_eq!(warn_msg.level, "WARN");
+
+        let error_msg = DisplayMessage {
+            message: "Error message".to_string(),
+            timestamp: "12:00:02".to_string(),
+            level: "ERROR".to_string(),
+        };
+        assert_eq!(error_msg.level, "ERROR");
     }
 }

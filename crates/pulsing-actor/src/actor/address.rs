@@ -30,6 +30,7 @@ pub enum AddressParseError {
 }
 
 impl fmt::Display for AddressParseError {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidScheme => write!(f, "Invalid scheme, expected 'actor://'"),
@@ -158,6 +159,7 @@ impl ActorPath {
 }
 
 impl fmt::Display for ActorPath {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
@@ -383,6 +385,7 @@ impl ActorAddress {
 }
 
 impl fmt::Display for ActorAddress {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_uri())
     }

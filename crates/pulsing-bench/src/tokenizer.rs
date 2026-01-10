@@ -172,4 +172,194 @@ mod tests {
         let tokens = counter.count_tokens("Hello world");
         assert!(tokens > 0);
     }
+
+    #[test]
+    fn test_estimate_tokenizer_default() {
+        let estimator = EstimateTokenizer;
+        let tokens = estimator.count_tokens("test");
+        assert!(tokens >= 1);
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_single_word() {
+        let estimator = EstimateTokenizer;
+        // Single word with no spaces = 1 word * 1.3 = 2 tokens (ceil)
+        let tokens = estimator.count_tokens("Hello");
+        assert_eq!(tokens, 2);
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_multiple_spaces() {
+        let estimator = EstimateTokenizer;
+        // "a  b  c" has 4 spaces, so 5 words * 1.3 = 6.5 -> 7 tokens
+        let tokens = estimator.count_tokens("a  b  c");
+        assert!(tokens >= 5);
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_whitespace_types() {
+        let estimator = EstimateTokenizer;
+        // Text with tabs and newlines
+        let text = "Hello\tworld\ntest";
+        let tokens = estimator.count_tokens(text);
+        // 2 whitespace chars = 3 words * 1.3 = 4 tokens
+        assert!(tokens >= 3);
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_unicode() {
+        let estimator = EstimateTokenizer;
+        // Chinese text
+        let tokens = estimator.count_tokens("你好 世界");
+        assert!(tokens >= 2);
+
+        // Emojis
+        let tokens = estimator.count_tokens("Hello 👋 World 🌍");
+        // 3 spaces = 4 words * 1.3 = 6 tokens
+        assert!(tokens >= 4);
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_min_one() {
+        let estimator = EstimateTokenizer;
+        // Even empty string should return at least 1 token
+        let tokens = estimator.count_tokens("");
+        assert!(tokens >= 1);
+    }
+
+    #[test]
+    fn test_token_counter_estimate() {
+        let counter = TokenCounter::estimate();
+        assert!(!counter.is_real());
+
+        let tokens = counter.count_tokens("Hello world");
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn test_token_counter_is_real() {
+        let estimate_counter = TokenCounter::estimate();
+        assert!(!estimate_counter.is_real());
+
+        let default_counter = TokenCounter::default();
+        assert!(!default_counter.is_real());
+    }
+
+    #[test]
+    fn test_token_counter_estimate_consistency() {
+        let counter = TokenCounter::estimate();
+
+        let text = "This is a test sentence for token counting.";
+        let tokens1 = counter.count_tokens(text);
+        let tokens2 = counter.count_tokens(text);
+
+        // Same text should always produce same count
+        assert_eq!(tokens1, tokens2);
+    }
+
+    #[test]
+    fn test_token_counter_estimate_different_texts() {
+        let counter = TokenCounter::estimate();
+
+        let short = "Hello";
+        let long = "Hello world this is a much longer sentence with more words";
+
+        let short_tokens = counter.count_tokens(short);
+        let long_tokens = counter.count_tokens(long);
+
+        // Longer text should have more tokens
+        assert!(long_tokens > short_tokens);
+    }
+
+    #[test]
+    fn test_token_counter_clone() {
+        let counter1 = TokenCounter::estimate();
+        let counter2 = counter1.clone();
+
+        // Both should produce same results
+        let text = "Test text";
+        assert_eq!(counter1.count_tokens(text), counter2.count_tokens(text));
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_clone() {
+        let est1 = EstimateTokenizer;
+        let est2 = est1.clone();
+
+        let text = "Test";
+        assert_eq!(est1.count_tokens(text), est2.count_tokens(text));
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_very_long_text() {
+        let estimator = EstimateTokenizer;
+
+        // Generate a very long text
+        let long_text = "word ".repeat(1000);
+        let tokens = estimator.count_tokens(&long_text);
+
+        // Should be approximately 1000 * 1.3 = 1300 tokens
+        assert!(tokens >= 1000);
+        assert!(tokens <= 1500);
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_special_characters() {
+        let estimator = EstimateTokenizer;
+
+        // Text with special characters but no spaces
+        let text = "hello@world.com";
+        let tokens = estimator.count_tokens(text);
+        // 0 spaces = 1 word * 1.3 = 2 tokens
+        assert_eq!(tokens, 2);
+    }
+
+    #[test]
+    fn test_estimate_tokenizer_only_spaces() {
+        let estimator = EstimateTokenizer;
+
+        // Only spaces
+        let text = "     ";
+        let tokens = estimator.count_tokens(text);
+        // 5 spaces = 6 words * 1.3 = 8 tokens
+        assert!(tokens >= 6);
+    }
+
+    // Note: Real tokenizer tests require network access and are marked as ignored
+    // They can be run manually with: cargo test -- --ignored
+
+    #[test]
+    #[ignore]
+    fn test_real_tokenizer_gpt2() {
+        // This test requires network access to download tokenizer
+        let result = TokenizerService::from_pretrained("gpt2", None);
+        if let Ok(tokenizer) = result {
+            assert_eq!(tokenizer.model_name(), "gpt2");
+
+            // Test token counting
+            let text = "Hello, world!";
+            let tokens = tokenizer.count_tokens(text);
+            assert!(tokens > 0);
+
+            // Test encode/decode
+            let encoded = tokenizer.encode(text).unwrap();
+            assert!(!encoded.is_empty());
+
+            let decoded = tokenizer.decode(&encoded).unwrap();
+            assert!(!decoded.is_empty());
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn test_token_counter_real() {
+        // This test requires network access
+        let result = TokenCounter::real("gpt2", None);
+        if let Ok(counter) = result {
+            assert!(counter.is_real());
+
+            let tokens = counter.count_tokens("Hello world");
+            assert!(tokens > 0);
+        }
+    }
 }

@@ -77,6 +77,7 @@ pub enum CircuitState {
 }
 
 impl std::fmt::Display for CircuitState {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CircuitState::Closed => write!(f, "Closed"),

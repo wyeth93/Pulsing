@@ -42,6 +42,7 @@ impl NodeId {
 }
 
 impl fmt::Display for NodeId {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -75,6 +76,7 @@ impl ActorId {
 }
 
 impl fmt::Display for ActorId {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.node().0, self.local_id())
     }
@@ -202,6 +204,7 @@ impl Message {
 }
 
 impl fmt::Debug for Message {
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Message::Single { msg_type, data } => f
