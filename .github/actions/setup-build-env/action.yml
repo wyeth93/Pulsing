@@ -57,6 +57,14 @@ runs:
         test -e ~/.cargo/bin/cargo-nextest || cargo install cargo-nextest
         test -e ~/.cargo/bin/cargo-llvm-cov || cargo install cargo-llvm-cov
 
+    - name: Create and activate virtual environment
+      if: inputs.install-python-deps == 'true'
+      shell: bash
+      run: |
+        python -m venv .venv
+        echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+        echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
     - name: Install Python Build Dependencies
       if: inputs.install-python-deps == 'true'
       shell: bash
