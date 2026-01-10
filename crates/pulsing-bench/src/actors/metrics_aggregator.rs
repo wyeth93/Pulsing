@@ -589,4 +589,387 @@ mod tests {
         // For 10 elements, 90th percentile rounds to index 8 (9.0)
         assert_eq!(PhaseStats::percentile(&values, 90.0), Some(9.0));
     }
+
+    #[test]
+    fn test_phase_stats_default() {
+        let stats = PhaseStats::default();
+        assert!(stats.phase_id.is_empty());
+        assert_eq!(stats.successful_requests, 0);
+        assert_eq!(stats.failed_requests, 0);
+        assert!(stats.start_time.is_none());
+        assert!(stats.end_time.is_none());
+    }
+
+    #[test]
+    fn test_phase_stats_multiple_results() {
+        let mut stats = PhaseStats::new(
+            "test".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            None,
+        );
+
+        // Add successful results
+        for i in 0..5 {
+            let result = RequestCompleted {
+                request_id: format!("{}", i),
+                success: true,
+                error: None,
+                ttft_ms: Some(100.0 + i as f64 * 10.0),
+                latency_ms: 500.0 + i as f64 * 50.0,
+                generated_tokens: 50,
+                prompt_tokens: 10,
+                tpot_ms: Some(8.0 + i as f64),
+                token_times_ms: vec![],
+            };
+            stats.add_result(&result);
+        }
+
+        assert_eq!(stats.successful_requests, 5);
+        assert_eq!(stats.failed_requests, 0);
+        assert_eq!(stats.total_prompt_tokens, 50);
+        assert_eq!(stats.total_generated_tokens, 250);
+
+        // Average TTFT should be (100 + 110 + 120 + 130 + 140) / 5 = 120
+        assert_eq!(stats.avg_ttft_ms(), Some(120.0));
+    }
+
+    #[test]
+    fn test_phase_stats_failed_result() {
+        let mut stats = PhaseStats::new(
+            "test".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            None,
+        );
+
+        let failed_result = RequestCompleted {
+            request_id: "1".to_string(),
+            success: false,
+            error: Some("Connection timeout".to_string()),
+            ttft_ms: None,
+            latency_ms: 5000.0,
+            generated_tokens: 0,
+            prompt_tokens: 10,
+            tpot_ms: None,
+            token_times_ms: vec![],
+        };
+
+        stats.add_result(&failed_result);
+        assert_eq!(stats.successful_requests, 0);
+        assert_eq!(stats.failed_requests, 1);
+        assert_eq!(stats.total_prompt_tokens, 0);
+    }
+
+    #[test]
+    fn test_phase_stats_error_rate() {
+        let mut stats = PhaseStats::new(
+            "test".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            None,
+        );
+
+        // Add 8 successful, 2 failed
+        for i in 0..10 {
+            let result = RequestCompleted {
+                request_id: format!("{}", i),
+                success: i < 8,
+                error: if i >= 8 {
+                    Some("Error".to_string())
+                } else {
+                    None
+                },
+                ttft_ms: Some(100.0),
+                latency_ms: 500.0,
+                generated_tokens: 50,
+                prompt_tokens: 10,
+                tpot_ms: Some(8.0),
+                token_times_ms: vec![],
+            };
+            stats.add_result(&result);
+        }
+
+        assert_eq!(stats.successful_requests, 8);
+        assert_eq!(stats.failed_requests, 2);
+        assert!((stats.error_rate() - 20.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_phase_stats_error_rate_zero() {
+        let stats = PhaseStats::default();
+        assert_eq!(stats.error_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_std_dev() {
+        // Standard deviation of [1, 2, 3, 4, 5] is sqrt(2.5) ≈ 1.58
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let std = PhaseStats::std_dev(&values).unwrap();
+        assert!((std - 1.5811).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_std_dev_single_value() {
+        let values = vec![5.0];
+        assert!(PhaseStats::std_dev(&values).is_none());
+    }
+
+    #[test]
+    fn test_std_dev_empty() {
+        let values: Vec<f64> = vec![];
+        assert!(PhaseStats::std_dev(&values).is_none());
+    }
+
+    #[test]
+    fn test_percentile_empty() {
+        let values: Vec<f64> = vec![];
+        assert!(PhaseStats::percentile(&values, 50.0).is_none());
+    }
+
+    #[test]
+    fn test_percentile_single_value() {
+        let values = vec![42.0];
+        assert_eq!(PhaseStats::percentile(&values, 50.0), Some(42.0));
+        assert_eq!(PhaseStats::percentile(&values, 99.0), Some(42.0));
+    }
+
+    #[test]
+    fn test_phase_stats_latency_percentiles() {
+        let mut stats = PhaseStats::new(
+            "test".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            None,
+        );
+
+        // Add results with increasing latencies
+        for i in 1..=100 {
+            let result = RequestCompleted {
+                request_id: format!("{}", i),
+                success: true,
+                error: None,
+                ttft_ms: Some(100.0),
+                latency_ms: i as f64,
+                generated_tokens: 50,
+                prompt_tokens: 10,
+                tpot_ms: Some(8.0),
+                token_times_ms: vec![],
+            };
+            stats.add_result(&result);
+        }
+
+        // p50 should be around 50
+        let p50 = stats.p50_latency_ms().unwrap();
+        assert!((p50 - 50.0).abs() < 2.0);
+
+        // p95 should be around 95
+        let p95 = stats.p95_latency_ms().unwrap();
+        assert!((p95 - 95.0).abs() < 2.0);
+
+        // p99 should be around 99
+        let p99 = stats.p99_latency_ms().unwrap();
+        assert!((p99 - 99.0).abs() < 2.0);
+    }
+
+    #[test]
+    fn test_phase_stats_empty_metrics() {
+        let stats = PhaseStats::default();
+        assert!(stats.avg_ttft_ms().is_none());
+        assert!(stats.avg_tpot_ms().is_none());
+        assert!(stats.avg_latency_ms().is_none());
+        assert!(stats.p50_latency_ms().is_none());
+        assert!(stats.p95_latency_ms().is_none());
+        assert!(stats.p99_latency_ms().is_none());
+        assert!(stats.ttft_std_ms().is_none());
+        assert!(stats.tpot_std_ms().is_none());
+    }
+
+    #[test]
+    fn test_phase_stats_throughput() {
+        let mut stats = PhaseStats::new(
+            "test".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            None,
+        );
+
+        // Add results
+        for _ in 0..10 {
+            let result = RequestCompleted {
+                request_id: "1".to_string(),
+                success: true,
+                error: None,
+                ttft_ms: Some(100.0),
+                latency_ms: 500.0,
+                generated_tokens: 100,
+                prompt_tokens: 50,
+                tpot_ms: Some(8.0),
+                token_times_ms: vec![],
+            };
+            stats.add_result(&result);
+        }
+
+        // Total tokens: 500 prompt + 1000 generated = 1500
+        assert_eq!(stats.total_prompt_tokens, 500);
+        assert_eq!(stats.total_generated_tokens, 1000);
+
+        // Throughput depends on duration, so test total_throughput
+        let input = stats.input_throughput();
+        let output = stats.output_throughput();
+        let total = stats.total_throughput();
+
+        // All should be Some since we have tokens
+        assert!(input.is_some());
+        assert!(output.is_some());
+        assert!(total.is_some());
+    }
+
+    #[test]
+    fn test_phase_stats_throughput_empty() {
+        let stats = PhaseStats::default();
+        assert!(stats.input_throughput().is_none());
+        assert!(stats.output_throughput().is_none());
+        assert!(stats.total_throughput().is_none());
+    }
+
+    #[test]
+    fn test_phase_stats_to_metrics() {
+        let mut stats = PhaseStats::new(
+            "phase-1".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            Some(10.0),
+        );
+
+        let result = RequestCompleted {
+            request_id: "1".to_string(),
+            success: true,
+            error: None,
+            ttft_ms: Some(100.0),
+            latency_ms: 500.0,
+            generated_tokens: 50,
+            prompt_tokens: 10,
+            tpot_ms: Some(8.0),
+            token_times_ms: vec![],
+        };
+        stats.add_result(&result);
+
+        let metrics = stats.to_metrics();
+        assert_eq!(metrics.phase_id, "phase-1");
+        assert_eq!(metrics.phase_name, "Test Phase");
+        assert_eq!(metrics.successful_requests, 1);
+        assert_eq!(metrics.failed_requests, 0);
+        assert_eq!(metrics.avg_ttft_ms, Some(100.0));
+    }
+
+    #[test]
+    fn test_phase_stats_progress() {
+        let stats = PhaseStats::new(
+            "test".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            None,
+        );
+
+        // Progress should be based on elapsed time vs expected duration
+        let expected_duration = Duration::from_secs(60);
+        let progress = stats.progress(expected_duration);
+        // Since we just started, progress should be small
+        assert!(progress >= 0.0);
+        assert!(progress <= 100.0);
+    }
+
+    #[test]
+    fn test_phase_stats_progress_zero_duration() {
+        let stats = PhaseStats::default();
+        let progress = stats.progress(Duration::ZERO);
+        assert_eq!(progress, 0.0);
+    }
+
+    #[test]
+    fn test_phase_display_data() {
+        let stats = PhaseStats::new(
+            "test".to_string(),
+            "Test Phase".to_string(),
+            SchedulerType::ConstantVUs,
+            None,
+        );
+
+        let expected_duration = Duration::from_secs(60);
+        let display = stats.to_display_snapshot(expected_duration);
+
+        assert_eq!(display.phase_id, "test");
+        assert_eq!(display.phase_name, "Test Phase");
+        assert!(!display.is_completed);
+    }
+
+    #[test]
+    fn test_phase_display_data_completed() {
+        let mut stats = PhaseStats::default();
+        stats.phase_id = "test".to_string();
+        stats.phase_name = "Test Phase".to_string();
+        stats.start_time = Some(std::time::Instant::now());
+        stats.end_time = Some(std::time::Instant::now());
+
+        let expected_duration = Duration::from_secs(60);
+        let display = stats.to_display_snapshot(expected_duration);
+        assert!(display.is_completed);
+        assert_eq!(display.progress_pct, 100.0);
+    }
+
+    #[test]
+    fn test_metrics_aggregator_new() {
+        let aggregator = MetricsAggregatorActor::new();
+        assert!(aggregator.run_id.is_none());
+        assert!(aggregator.config.is_none());
+        assert!(aggregator.current_phase.is_none());
+        assert!(aggregator.completed_phases.is_empty());
+    }
+
+    #[test]
+    fn test_metrics_aggregator_default() {
+        let aggregator = MetricsAggregatorActor::default();
+        assert!(aggregator.run_id.is_none());
+    }
+
+    #[test]
+    fn test_display_message() {
+        let msg = DisplayMessage {
+            message: "Test message".to_string(),
+            timestamp: "12:00:00".to_string(),
+            level: "INFO".to_string(),
+        };
+
+        assert_eq!(msg.message, "Test message");
+        assert_eq!(msg.level, "INFO");
+    }
+
+    #[test]
+    fn test_display_update() {
+        let update = DisplayUpdate {
+            config: None,
+            completed_phases: vec![],
+            current_phase: None,
+            messages: vec![],
+        };
+
+        assert!(update.config.is_none());
+        assert!(update.completed_phases.is_empty());
+    }
+
+    #[test]
+    fn test_final_report() {
+        let report = BenchmarkReport {
+            run_id: "test".to_string(),
+            config: BenchmarkConfig::default(),
+            phases: vec![],
+            start_time: "".to_string(),
+            end_time: "".to_string(),
+            total_duration_secs: 0.0,
+        };
+
+        let final_report = FinalReport { report };
+        assert_eq!(final_report.report.run_id, "test");
+    }
 }

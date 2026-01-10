@@ -67,3 +67,6 @@ vergen-gitcl = { workspace = true }
 name = "pulsing_bench"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
+
+[lints]
+workspace = true

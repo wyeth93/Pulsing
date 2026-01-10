@@ -1,4 +1,5 @@
 //! Pulsing Benchmark - Actor-based LLM Inference Benchmarking Tool
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //!
 //! This crate provides a high-performance benchmark tool for LLM inference endpoints
 //! using the Actor model for better separation of concerns and real-time metrics.
@@ -268,4 +269,87 @@ pub async fn run_throughput_test(
         ..Default::default()
     };
     run_benchmark(args).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_benchmark_args_default() {
+        let args = BenchmarkArgs::default();
+        assert_eq!(args.url, "http://localhost:8000");
+        assert_eq!(args.model_name, "gpt2");
+        assert_eq!(args.max_vus, 128);
+        assert_eq!(args.duration_secs, 120);
+        assert_eq!(args.warmup_secs, 30);
+        assert_eq!(args.benchmark_kind, "throughput");
+        assert!(args.api_key.is_empty());
+        assert!(args.tokenizer_name.is_none());
+        assert!(args.hf_token.is_none());
+        assert!(args.rates.is_none());
+        assert_eq!(args.num_rates, 10);
+        assert_eq!(args.num_workers, 4);
+    }
+
+    #[test]
+    fn test_benchmark_args_custom() {
+        let args = BenchmarkArgs {
+            url: "http://example.com:8080".to_string(),
+            api_key: "secret".to_string(),
+            model_name: "llama".to_string(),
+            tokenizer_name: Some("meta-llama/Llama-2".to_string()),
+            hf_token: Some("hf_token".to_string()),
+            max_vus: 64,
+            duration_secs: 60,
+            warmup_secs: 15,
+            benchmark_kind: "sweep".to_string(),
+            num_rates: 5,
+            rates: Some(vec![1.0, 2.0, 3.0]),
+            num_workers: 8,
+        };
+
+        assert_eq!(args.url, "http://example.com:8080");
+        assert_eq!(args.api_key, "secret");
+        assert_eq!(args.model_name, "llama");
+        assert_eq!(args.tokenizer_name, Some("meta-llama/Llama-2".to_string()));
+        assert_eq!(args.max_vus, 64);
+        assert_eq!(args.rates, Some(vec![1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn test_parse_duration_seconds() {
+        let duration = parse_duration("120s").unwrap();
+        assert_eq!(duration.as_secs(), 120);
+    }
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        let duration = parse_duration("2m").unwrap();
+        assert_eq!(duration.as_secs(), 120);
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        let duration = parse_duration("1h").unwrap();
+        assert_eq!(duration.as_secs(), 3600);
+    }
+
+    #[test]
+    fn test_parse_duration_milliseconds() {
+        let duration = parse_duration("500ms").unwrap();
+        assert_eq!(duration.as_millis(), 500);
+    }
+
+    #[test]
+    fn test_parse_duration_combined() {
+        let duration = parse_duration("1h30m").unwrap();
+        assert_eq!(duration.as_secs(), 5400);
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_duration("invalid").is_err());
+        assert!(parse_duration("abc123").is_err());
+    }
 }

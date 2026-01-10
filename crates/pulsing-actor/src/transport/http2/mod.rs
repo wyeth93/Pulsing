@@ -476,4 +476,118 @@ mod tests {
         let transport = Http2RemoteTransport::new_named(client, addr, path);
         assert_eq!(transport.path(), "/named/services/llm");
     }
+
+    #[test]
+    fn test_message_mode_equality() {
+        assert_eq!(MessageMode::Ask, MessageMode::Ask);
+        assert_eq!(MessageMode::Tell, MessageMode::Tell);
+        assert_eq!(MessageMode::Stream, MessageMode::Stream);
+        assert_ne!(MessageMode::Ask, MessageMode::Tell);
+        assert_ne!(MessageMode::Ask, MessageMode::Stream);
+        assert_ne!(MessageMode::Tell, MessageMode::Stream);
+    }
+
+    #[test]
+    fn test_message_mode_parse_case_insensitive() {
+        assert_eq!(MessageMode::parse("ASK"), Some(MessageMode::Ask));
+        assert_eq!(MessageMode::parse("Ask"), Some(MessageMode::Ask));
+        assert_eq!(MessageMode::parse("aSk"), Some(MessageMode::Ask));
+        assert_eq!(MessageMode::parse("STREAM"), Some(MessageMode::Stream));
+    }
+
+    #[test]
+    fn test_message_mode_parse_empty() {
+        assert_eq!(MessageMode::parse(""), None);
+    }
+
+    #[test]
+    fn test_response_type() {
+        assert_eq!(ResponseType::Single.as_str(), "single");
+        assert_eq!(ResponseType::Stream.as_str(), "stream");
+
+        assert_eq!(ResponseType::parse("single"), Some(ResponseType::Single));
+        assert_eq!(ResponseType::parse("stream"), Some(ResponseType::Stream));
+        assert_eq!(ResponseType::parse("SINGLE"), Some(ResponseType::Single));
+        assert_eq!(ResponseType::parse("STREAM"), Some(ResponseType::Stream));
+        assert_eq!(ResponseType::parse("invalid"), None);
+        assert_eq!(ResponseType::parse(""), None);
+    }
+
+    #[test]
+    fn test_response_type_equality() {
+        assert_eq!(ResponseType::Single, ResponseType::Single);
+        assert_eq!(ResponseType::Stream, ResponseType::Stream);
+        assert_ne!(ResponseType::Single, ResponseType::Stream);
+    }
+
+    #[test]
+    fn test_http2_headers() {
+        assert_eq!(headers::MESSAGE_MODE, "x-message-mode");
+        assert_eq!(headers::MESSAGE_TYPE, "x-message-type");
+        assert_eq!(headers::RESPONSE_TYPE, "x-response-type");
+        assert_eq!(headers::REQUEST_ID, "x-request-id");
+    }
+
+    #[test]
+    fn test_http2_remote_transport_new_by_id() {
+        let client = Arc::new(Http2Client::new(Http2Config::default()));
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let actor_id = ActorId::local(42);
+
+        let transport = Http2RemoteTransport::new_by_id(client, addr, actor_id);
+        assert_eq!(transport.path(), "/actors/42");
+        assert_eq!(transport.remote_addr(), addr);
+    }
+
+    #[test]
+    fn test_http2_remote_transport_with_circuit_breaker() {
+        let client = Arc::new(Http2Client::new(Http2Config::default()));
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let cb_config = CircuitBreakerConfig::default();
+
+        let transport = Http2RemoteTransport::with_circuit_breaker(
+            client,
+            addr,
+            "my_actor".to_string(),
+            cb_config,
+        );
+        assert_eq!(transport.path(), "/actors/my_actor");
+        assert!(transport.circuit_breaker().can_execute());
+    }
+
+    #[test]
+    fn test_http2_remote_transport_named_with_circuit_breaker() {
+        let client = Arc::new(Http2Client::new(Http2Config::default()));
+        let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let path = ActorPath::new("services/llm").unwrap();
+        let cb_config = CircuitBreakerConfig::default();
+
+        let transport = Http2RemoteTransport::new_named_with_circuit_breaker(
+            client,
+            addr,
+            path,
+            cb_config,
+        );
+        assert_eq!(transport.path(), "/named/services/llm");
+    }
+
+    #[test]
+    fn test_http2_remote_transport_accessors() {
+        let client = Arc::new(Http2Client::new(Http2Config::default()));
+        let addr: SocketAddr = "192.168.1.100:9000".parse().unwrap();
+
+        let transport = Http2RemoteTransport::new(client.clone(), addr, "test_actor".to_string());
+
+        assert_eq!(transport.remote_addr(), addr);
+        assert_eq!(transport.path(), "/actors/test_actor");
+        assert!(Arc::ptr_eq(&transport.client(), &client));
+    }
+
+    #[tokio::test]
+    async fn test_http2_transport_new_client() {
+        let config = Http2Config::default();
+        let transport = Http2Transport::new_client(config);
+
+        assert_eq!(transport.local_addr().port(), 0);
+    }
 }

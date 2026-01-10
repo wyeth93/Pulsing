@@ -313,4 +313,137 @@ mod tests {
         let indices = get_healthy_worker_indices(&workers);
         assert_eq!(indices, vec![0, 2]);
     }
+
+    #[test]
+    fn test_basic_worker_url() {
+        let worker = BasicWorker::new("http://localhost:9000".to_string());
+        assert_eq!(worker.url(), "http://localhost:9000");
+    }
+
+    #[test]
+    fn test_basic_worker_with_model() {
+        let worker = BasicWorker::with_model(
+            "http://localhost:8000".to_string(),
+            "llama-7b".to_string(),
+        );
+        assert_eq!(worker.url(), "http://localhost:8000");
+        assert_eq!(worker.model_id(), "llama-7b");
+    }
+
+    #[test]
+    fn test_basic_worker_default_model() {
+        let worker = BasicWorker::new("http://localhost:8000".to_string());
+        assert_eq!(worker.model_id(), "default");
+    }
+
+    #[test]
+    fn test_basic_worker_load_increment_decrement() {
+        let worker = BasicWorker::new("http://localhost:8000".to_string());
+        assert_eq!(worker.load(), 0);
+
+        worker.increment_load();
+        worker.increment_load();
+        worker.increment_load();
+        assert_eq!(worker.load(), 3);
+
+        worker.decrement_load();
+        assert_eq!(worker.load(), 2);
+
+        worker.decrement_load();
+        worker.decrement_load();
+        assert_eq!(worker.load(), 0);
+    }
+
+    #[test]
+    fn test_basic_worker_processed_counter() {
+        let worker = BasicWorker::new("http://localhost:8000".to_string());
+        assert_eq!(worker.processed(), 0);
+
+        worker.increment_processed();
+        worker.increment_processed();
+        worker.increment_processed();
+        worker.increment_processed();
+        worker.increment_processed();
+        assert_eq!(worker.processed(), 5);
+    }
+
+    #[test]
+    fn test_basic_worker_health_toggle() {
+        let worker = BasicWorker::new("http://localhost:8000".to_string());
+        assert!(worker.is_healthy());
+
+        worker.set_health(false);
+        assert!(!worker.is_healthy());
+
+        worker.set_health(true);
+        assert!(worker.is_healthy());
+    }
+
+    #[test]
+    fn test_basic_worker_circuit_breaker_default() {
+        let worker = BasicWorker::new("http://localhost:8000".to_string());
+        assert!(worker.circuit_breaker_allows());
+    }
+
+    #[test]
+    fn test_basic_worker_as_any() {
+        let worker = BasicWorker::new("http://localhost:8000".to_string());
+        let any_ref = worker.as_any();
+        assert!(any_ref.downcast_ref::<BasicWorker>().is_some());
+    }
+
+    #[test]
+    fn test_get_healthy_worker_indices_empty() {
+        let workers: Vec<Arc<dyn Worker>> = vec![];
+        let indices = get_healthy_worker_indices(&workers);
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn test_get_healthy_worker_indices_all_unhealthy() {
+        let workers: Vec<Arc<dyn Worker>> = vec![
+            Arc::new(BasicWorker::new("http://w1:8000".to_string())),
+            Arc::new(BasicWorker::new("http://w2:8000".to_string())),
+        ];
+
+        for worker in &workers {
+            if let Some(w) = worker.as_any().downcast_ref::<BasicWorker>() {
+                w.set_health(false);
+            }
+        }
+
+        let indices = get_healthy_worker_indices(&workers);
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn test_get_healthy_worker_indices_single_healthy() {
+        let workers: Vec<Arc<dyn Worker>> = vec![
+            Arc::new(BasicWorker::new("http://w1:8000".to_string())),
+            Arc::new(BasicWorker::new("http://w2:8000".to_string())),
+            Arc::new(BasicWorker::new("http://w3:8000".to_string())),
+        ];
+
+        // Mark first two as unhealthy
+        if let Some(w) = workers[0].as_any().downcast_ref::<BasicWorker>() {
+            w.set_health(false);
+        }
+        if let Some(w) = workers[1].as_any().downcast_ref::<BasicWorker>() {
+            w.set_health(false);
+        }
+
+        let indices = get_healthy_worker_indices(&workers);
+        assert_eq!(indices, vec![2]);
+    }
+
+    #[test]
+    fn test_request_headers_type() {
+        let mut headers: RequestHeaders = HashMap::new();
+        headers.insert("content-type".to_string(), "application/json".to_string());
+        headers.insert("x-request-id".to_string(), "12345".to_string());
+
+        assert_eq!(headers.get("content-type"), Some(&"application/json".to_string()));
+        assert_eq!(headers.get("x-request-id"), Some(&"12345".to_string()));
+        assert_eq!(headers.len(), 2);
+    }
 }

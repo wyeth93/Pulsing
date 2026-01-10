@@ -2,6 +2,10 @@
 members = ["crates/pulsing-actor", "crates/pulsing-bench", "crates/pulsing-bench-py", "crates/pulsing-py"]
 resolver = "3"
 
+# Allow coverage_nightly cfg for cargo-llvm-cov
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"

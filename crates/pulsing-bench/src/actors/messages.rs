@@ -310,3 +310,254 @@ impl AckMessage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_benchmark_config_default() {
+        let config = BenchmarkConfig::default();
+        assert_eq!(config.url, "http://localhost:8000");
+        assert_eq!(config.model_name, "gpt2");
+        assert_eq!(config.max_vus, 128);
+        assert_eq!(config.duration_secs, 120);
+        assert_eq!(config.warmup_secs, 30);
+        assert!(config.rate.is_none());
+        assert_eq!(config.benchmark_kind, "throughput");
+    }
+
+    #[test]
+    fn test_benchmark_config_serialization() {
+        let config = BenchmarkConfig {
+            url: "http://test.com".to_string(),
+            api_key: "key".to_string(),
+            model_name: "model".to_string(),
+            tokenizer_name: Some("tokenizer".to_string()),
+            max_vus: 10,
+            duration_secs: 60,
+            rate: Some(5.0),
+            warmup_secs: 10,
+            benchmark_kind: "rate".to_string(),
+            num_rates: 5,
+            rates: Some(vec![1.0, 2.0]),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: BenchmarkConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.url, config.url);
+        assert_eq!(deserialized.rate, Some(5.0));
+        assert_eq!(deserialized.rates, Some(vec![1.0, 2.0]));
+    }
+
+    #[test]
+    fn test_request_template() {
+        let template = RequestTemplate {
+            id: "req-1".to_string(),
+            prompt: "Hello world".to_string(),
+            num_prompt_tokens: 2,
+            num_decode_tokens: Some(100),
+        };
+
+        assert_eq!(template.id, "req-1");
+        assert_eq!(template.num_prompt_tokens, 2);
+        assert_eq!(template.num_decode_tokens, Some(100));
+    }
+
+    #[test]
+    fn test_ack_message_ok() {
+        let ack = AckMessage::ok();
+        assert!(ack.success);
+        assert_eq!(ack.message, "OK");
+    }
+
+    #[test]
+    fn test_ack_message_error() {
+        let ack = AckMessage::error("Something went wrong");
+        assert!(!ack.success);
+        assert_eq!(ack.message, "Something went wrong");
+    }
+
+    #[test]
+    fn test_ack_message_error_string() {
+        let error_msg = String::from("Error from string");
+        let ack = AckMessage::error(error_msg);
+        assert!(!ack.success);
+        assert_eq!(ack.message, "Error from string");
+    }
+
+    #[test]
+    fn test_benchmark_phase_equality() {
+        assert_eq!(BenchmarkPhase::Initializing, BenchmarkPhase::Initializing);
+        assert_eq!(BenchmarkPhase::Warmup, BenchmarkPhase::Warmup);
+        assert_eq!(BenchmarkPhase::Running, BenchmarkPhase::Running);
+        assert_eq!(BenchmarkPhase::Cooldown, BenchmarkPhase::Cooldown);
+        assert_eq!(BenchmarkPhase::Completed, BenchmarkPhase::Completed);
+        assert_ne!(BenchmarkPhase::Running, BenchmarkPhase::Completed);
+    }
+
+    #[test]
+    fn test_benchmark_phase_failed() {
+        let failed = BenchmarkPhase::Failed("Connection error".to_string());
+        if let BenchmarkPhase::Failed(msg) = failed {
+            assert_eq!(msg, "Connection error");
+        } else {
+            panic!("Expected Failed variant");
+        }
+    }
+
+    #[test]
+    fn test_scheduler_type_default() {
+        let scheduler_type = SchedulerType::default();
+        assert_eq!(scheduler_type, SchedulerType::ConstantVUs);
+    }
+
+    #[test]
+    fn test_scheduler_type_equality() {
+        assert_eq!(SchedulerType::ConstantVUs, SchedulerType::ConstantVUs);
+        assert_eq!(
+            SchedulerType::ConstantArrivalRate,
+            SchedulerType::ConstantArrivalRate
+        );
+        assert_ne!(SchedulerType::ConstantVUs, SchedulerType::ConstantArrivalRate);
+    }
+
+    #[test]
+    fn test_request_completed_default() {
+        let completed = RequestCompleted::default();
+        assert!(completed.request_id.is_empty());
+        assert!(!completed.success);
+        assert!(completed.error.is_none());
+        assert!(completed.ttft_ms.is_none());
+        assert_eq!(completed.latency_ms, 0.0);
+        assert_eq!(completed.generated_tokens, 0);
+        assert_eq!(completed.prompt_tokens, 0);
+        assert!(completed.tpot_ms.is_none());
+        assert!(completed.token_times_ms.is_empty());
+    }
+
+    #[test]
+    fn test_request_completed_success() {
+        let completed = RequestCompleted {
+            request_id: "req-123".to_string(),
+            success: true,
+            error: None,
+            ttft_ms: Some(50.0),
+            latency_ms: 500.0,
+            generated_tokens: 100,
+            prompt_tokens: 10,
+            tpot_ms: Some(4.5),
+            token_times_ms: vec![50.0, 54.5, 59.0],
+        };
+
+        assert!(completed.success);
+        assert_eq!(completed.ttft_ms, Some(50.0));
+        assert_eq!(completed.latency_ms, 500.0);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_default() {
+        let snapshot = MetricsSnapshot::default();
+        assert!(snapshot.phase_id.is_empty());
+        assert_eq!(snapshot.progress_pct, 0.0);
+        assert_eq!(snapshot.successful_requests, 0);
+        assert!(snapshot.avg_ttft_ms.is_none());
+    }
+
+    #[test]
+    fn test_coordinator_status() {
+        let status = CoordinatorStatus {
+            run_id: Some("run-123".to_string()),
+            phase: Some(BenchmarkPhase::Running),
+            workers: 4,
+            active_requests: 10,
+        };
+
+        assert_eq!(status.run_id, Some("run-123".to_string()));
+        assert_eq!(status.workers, 4);
+        assert_eq!(status.active_requests, 10);
+    }
+
+    #[test]
+    fn test_start_benchmark() {
+        let config = BenchmarkConfig::default();
+        let start = StartBenchmark {
+            config: config.clone(),
+            run_id: "test-run".to_string(),
+        };
+
+        assert_eq!(start.run_id, "test-run");
+        assert_eq!(start.config.url, config.url);
+    }
+
+    #[test]
+    fn test_stop_benchmark() {
+        let stop = StopBenchmark {
+            run_id: "test-run".to_string(),
+            reason: "User interrupted".to_string(),
+        };
+
+        assert_eq!(stop.run_id, "test-run");
+        assert_eq!(stop.reason, "User interrupted");
+    }
+
+    #[test]
+    fn test_configure_scheduler() {
+        let config = ConfigureScheduler {
+            scheduler_type: SchedulerType::ConstantArrivalRate,
+            max_vus: 50,
+            duration_secs: 120,
+            rate: Some(10.0),
+        };
+
+        assert_eq!(config.scheduler_type, SchedulerType::ConstantArrivalRate);
+        assert_eq!(config.max_vus, 50);
+        assert_eq!(config.rate, Some(10.0));
+    }
+
+    #[test]
+    fn test_worker_status() {
+        let status = WorkerStatus {
+            worker_id: "worker-1".to_string(),
+            active_requests: 5,
+            completed_requests: 100,
+            failed_requests: 2,
+        };
+
+        assert_eq!(status.worker_id, "worker-1");
+        assert_eq!(status.active_requests, 5);
+        assert_eq!(status.completed_requests, 100);
+        assert_eq!(status.failed_requests, 2);
+    }
+
+    #[test]
+    fn test_scheduler_progress() {
+        let progress = SchedulerProgress {
+            phase_id: "phase-1".to_string(),
+            progress_pct: 75.5,
+            sent_requests: 1000,
+            active_vus: 10,
+            elapsed_secs: 45.0,
+        };
+
+        assert_eq!(progress.phase_id, "phase-1");
+        assert_eq!(progress.progress_pct, 75.5);
+        assert_eq!(progress.sent_requests, 1000);
+    }
+
+    #[test]
+    fn test_benchmark_report() {
+        let report = BenchmarkReport {
+            run_id: "run-123".to_string(),
+            config: BenchmarkConfig::default(),
+            phases: vec![],
+            start_time: "2024-01-01T00:00:00Z".to_string(),
+            end_time: "2024-01-01T00:01:00Z".to_string(),
+            total_duration_secs: 60.0,
+        };
+
+        assert_eq!(report.run_id, "run-123");
+        assert_eq!(report.total_duration_secs, 60.0);
+        assert!(report.phases.is_empty());
+    }
+}

@@ -72,6 +72,12 @@ cov-rust:
 cov-rust-summary:
     cargo llvm-cov --workspace --exclude pulsing-py --exclude pulsing-bench-py
 
+# Rust coverage with nightly (支持 #[coverage(off)] 标记，但可能不稳定)
+cov-rust-nightly:
+    @echo "Running Rust tests with coverage (nightly)..."
+    cargo +nightly llvm-cov --workspace --exclude pulsing-py --exclude pulsing-bench-py --html
+    @echo "Report: target/llvm-cov/html/index.html"
+
 # Python coverage with HTML report
 cov-python:
     @echo "Running Python tests with coverage..."

@@ -521,4 +521,174 @@ mod tests {
         };
         assert_eq!(config.rate, Some(10.0));
     }
+
+    #[test]
+    fn test_simple_request_generator_custom_prompts() {
+        let prompts = vec!["Hello".to_string(), "World".to_string()];
+        let gen = SimpleRequestGenerator::new(prompts);
+
+        let req1 = gen.generate();
+        let _req2 = gen.generate(); // consume second request
+        let req3 = gen.generate();
+
+        // Third request should wrap around to first prompt
+        assert!(req1.prompt == "Hello" || req1.prompt == "World");
+        assert!(req3.prompt == "Hello" || req3.prompt == "World");
+    }
+
+    #[test]
+    fn test_simple_request_generator_id_increment() {
+        let gen = SimpleRequestGenerator::default_prompts();
+
+        let req1 = gen.generate();
+        let req2 = gen.generate();
+        let req3 = gen.generate();
+
+        assert_eq!(req1.id, "req-0");
+        assert_eq!(req2.id, "req-1");
+        assert_eq!(req3.id, "req-2");
+    }
+
+    #[test]
+    fn test_simple_request_generator_token_estimate() {
+        let prompts = vec!["Hello world test".to_string()];
+        let gen = SimpleRequestGenerator::new(prompts);
+        let req = gen.generate();
+
+        // Token estimate is len / 4
+        // "Hello world test" = 16 chars / 4 = 4 tokens
+        assert_eq!(req.num_prompt_tokens, 4);
+    }
+
+    #[test]
+    fn test_scheduler_config_default() {
+        let config = SchedulerConfig::default();
+        assert_eq!(config.scheduler_type, SchedulerType::ConstantVUs);
+        assert_eq!(config.max_vus, 10);
+        assert_eq!(config.duration, Duration::from_secs(60));
+        assert!(config.rate.is_none());
+    }
+
+    #[test]
+    fn test_scheduler_actor_new() {
+        let scheduler = SchedulerActor::new();
+        assert!(scheduler.workers.is_empty());
+        assert!(scheduler.coordinator_ref.is_none());
+        assert!(scheduler.metrics_ref.is_none());
+        assert_eq!(scheduler.target_url, "http://localhost:8000");
+        assert!(scheduler.api_key.is_empty());
+        assert_eq!(scheduler.model_name, "gpt2");
+    }
+
+    #[test]
+    fn test_scheduler_actor_default() {
+        let scheduler = SchedulerActor::default();
+        assert!(scheduler.workers.is_empty());
+    }
+
+    #[test]
+    fn test_scheduler_actor_with_config() {
+        let config = SchedulerConfig {
+            scheduler_type: SchedulerType::ConstantArrivalRate,
+            max_vus: 50,
+            duration: Duration::from_secs(120),
+            rate: Some(20.0),
+        };
+
+        let scheduler = SchedulerActor::new().with_config(config.clone());
+        assert_eq!(scheduler.config.scheduler_type, SchedulerType::ConstantArrivalRate);
+        assert_eq!(scheduler.config.max_vus, 50);
+        assert_eq!(scheduler.config.rate, Some(20.0));
+    }
+
+    #[test]
+    fn test_scheduler_actor_with_target() {
+        let scheduler = SchedulerActor::new().with_target(
+            "http://example.com".to_string(),
+            "api_key".to_string(),
+            "llama".to_string(),
+        );
+
+        assert_eq!(scheduler.target_url, "http://example.com");
+        assert_eq!(scheduler.api_key, "api_key");
+        assert_eq!(scheduler.model_name, "llama");
+    }
+
+    #[test]
+    fn test_scheduler_progress_initial() {
+        let scheduler = SchedulerActor::new();
+        let progress = scheduler.get_progress();
+
+        assert!(progress.phase_id.is_empty());
+        assert_eq!(progress.progress_pct, 0.0);
+        assert_eq!(progress.sent_requests, 0);
+        assert_eq!(progress.active_vus, 0);
+        assert_eq!(progress.elapsed_secs, 0.0);
+    }
+
+    #[test]
+    fn test_tokenized_request_generator() {
+        let token_counter = TokenCounter::estimate();
+        let gen = TokenizedRequestGenerator::new(token_counter);
+
+        let req = gen.generate();
+        assert!(!req.prompt.is_empty());
+        assert!(req.num_prompt_tokens > 0);
+        assert_eq!(req.id, "req-0");
+    }
+
+    #[test]
+    fn test_tokenized_request_generator_with_prompts() {
+        let token_counter = TokenCounter::estimate();
+        let prompts = vec!["Custom prompt one".to_string(), "Custom prompt two".to_string()];
+        let gen = TokenizedRequestGenerator::new(token_counter).with_prompts(prompts);
+
+        let req1 = gen.generate();
+        let req2 = gen.generate();
+
+        assert!(req1.prompt == "Custom prompt one" || req1.prompt == "Custom prompt two");
+        assert!(req2.prompt == "Custom prompt one" || req2.prompt == "Custom prompt two");
+    }
+
+    #[test]
+    fn test_tokenized_request_generator_id_increment() {
+        let token_counter = TokenCounter::estimate();
+        let gen = TokenizedRequestGenerator::new(token_counter);
+
+        let req1 = gen.generate();
+        let req2 = gen.generate();
+        let req3 = gen.generate();
+
+        assert_eq!(req1.id, "req-0");
+        assert_eq!(req2.id, "req-1");
+        assert_eq!(req3.id, "req-2");
+    }
+
+    #[test]
+    fn test_scheduler_configure() {
+        let mut scheduler = SchedulerActor::new();
+
+        let config_msg = ConfigureScheduler {
+            scheduler_type: SchedulerType::ConstantArrivalRate,
+            max_vus: 100,
+            duration_secs: 180,
+            rate: Some(50.0),
+        };
+
+        scheduler.configure(config_msg);
+
+        assert_eq!(scheduler.config.scheduler_type, SchedulerType::ConstantArrivalRate);
+        assert_eq!(scheduler.config.max_vus, 100);
+        assert_eq!(scheduler.config.duration, Duration::from_secs(180));
+        assert_eq!(scheduler.config.rate, Some(50.0));
+    }
+
+    #[test]
+    fn test_request_template_decode_tokens() {
+        let gen = SimpleRequestGenerator::default_prompts();
+        let req = gen.generate();
+
+        // Default decode tokens should be 100
+        assert_eq!(req.num_decode_tokens, Some(100));
+    }
 }

@@ -1,5 +1,7 @@
 //! # Pulsing Actor System
 //!
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+//!
 //! A lightweight, zero-external-dependency distributed actor framework.
 //!
 //! ## Features
