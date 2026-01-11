@@ -61,6 +61,34 @@ T = TypeVar("T")
 # Global class registry
 _actor_class_registry: dict[str, type] = {}
 
+# Actor instance metadata registry (actor_name -> metadata)
+_actor_metadata_registry: dict[str, dict[str, str]] = {}
+
+
+def _register_actor_metadata(name: str, cls: type):
+    """Register actor metadata for later retrieval"""
+    import inspect
+
+    metadata = {
+        "python_class": f"{cls.__module__}.{cls.__name__}",
+        "python_module": cls.__module__,
+    }
+
+    # Try to get source file
+    try:
+        source_file = inspect.getfile(cls)
+        metadata["python_file"] = source_file
+    except (TypeError, OSError):
+        pass
+
+    _actor_metadata_registry[name] = metadata
+
+
+def get_actor_metadata(name: str) -> dict[str, str] | None:
+    """Get metadata for an actor by name"""
+    return _actor_metadata_registry.get(name)
+
+
 # Python actor service name (different from Rust SystemActor "system/core")
 PYTHON_ACTOR_SERVICE_NAME = "_python_actor_service"
 
@@ -116,6 +144,26 @@ class _WrappedActor(_ActorBase):
 
     def __init__(self, instance: Any):
         self._instance = instance
+        # Store original class info for metadata extraction
+        self._original_class = instance.__class__
+
+    @property
+    def __original_module__(self):
+        """Return original class module for Rust metadata extraction"""
+        return self._original_class.__module__
+
+    @property
+    def __original_qualname__(self):
+        """Return original class qualified name for Rust metadata extraction"""
+        return self._original_class.__qualname__
+
+    @property
+    def __original_file__(self):
+        """Return original class file path for Rust metadata extraction"""
+        try:
+            return inspect.getfile(self._original_class)
+        except (TypeError, OSError):
+            return None
 
     def on_start(self, actor_id) -> None:
         if hasattr(self._instance, "on_start"):
@@ -241,6 +289,9 @@ class PythonActorService(_ActorBase):
                 actor = _WrappedActor(instance)
                 actor_ref = await self.system.spawn(actor_name, actor, public=public)
 
+            # Register actor metadata
+            _register_actor_metadata(actor_name, cls)
+
             method_names = [
                 n
                 for n, _ in inspect.getmembers(cls, predicate=inspect.isfunction)
@@ -363,6 +414,9 @@ class ActorClass:
             instance = self._cls(*args, **kwargs)
             actor = _WrappedActor(instance)
             actor_ref = await system.spawn(actor_name, actor, public=True)
+
+        # Register actor metadata
+        _register_actor_metadata(actor_name, self._cls)
 
         return ActorProxy(actor_ref, self._methods)
 

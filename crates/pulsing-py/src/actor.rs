@@ -707,6 +707,43 @@ impl Actor for PythonActorWrapper {
     fn metadata(&self) -> std::collections::HashMap<String, String> {
         Python::with_gil(|py| {
             let mut result = std::collections::HashMap::new();
+
+            // First, try to extract built-in Python class information
+            if let Ok(class) = self.handler.getattr(py, "__class__") {
+                // Get class name
+                if let Ok(name) = class.getattr(py, "__name__") {
+                    if let Ok(name_str) = name.extract::<String>(py) {
+                        result.insert("python_class".to_string(), name_str);
+                    }
+                }
+
+                // Get module name
+                if let Ok(module) = class.getattr(py, "__module__") {
+                    if let Ok(module_str) = module.extract::<String>(py) {
+                        result.insert("python_module".to_string(), module_str);
+                    }
+                }
+
+                // Get source file path
+                if let Ok(module_name) = class.getattr(py, "__module__") {
+                    if let Ok(module_str) = module_name.extract::<String>(py) {
+                        // Try to get the module and its file path
+                        if let Ok(sys) = py.import("sys") {
+                            if let Ok(modules) = sys.getattr("modules") {
+                                if let Ok(module_obj) = modules.get_item(module_str.as_str()) {
+                                    if let Ok(file_attr) = module_obj.getattr("__file__") {
+                                        if let Ok(file_path) = file_attr.extract::<String>() {
+                                            result.insert("python_file".to_string(), file_path);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Then, check if the actor has custom metadata attribute
             if let Ok(metadata_attr) = self.handler.getattr(py, "metadata") {
                 let bound = metadata_attr.bind(py);
                 let value = if bound.is_callable() {
@@ -724,6 +761,7 @@ impl Actor for PythonActorWrapper {
                     }
                 }
             }
+
             result
         })
     }
@@ -983,10 +1021,76 @@ impl PyActorSystem {
             }
         };
 
+        // Extract Python class metadata
+        let metadata = Python::with_gil(|py| {
+            let mut meta = std::collections::HashMap::new();
+
+            // Try to get original class info from _WrappedActor first
+            // This handles the @remote decorator case where we wrap user classes
+            let (module, qualname, file) = {
+                // Check for __original_module__, __original_qualname__, __original_file__
+                let orig_module = handler
+                    .getattr(py, "__original_module__")
+                    .ok()
+                    .and_then(|m| m.extract::<String>(py).ok());
+                let orig_qualname = handler
+                    .getattr(py, "__original_qualname__")
+                    .ok()
+                    .and_then(|q| q.extract::<String>(py).ok());
+                let orig_file = handler
+                    .getattr(py, "__original_file__")
+                    .ok()
+                    .and_then(|f| f.extract::<String>(py).ok());
+
+                if orig_module.is_some() || orig_qualname.is_some() {
+                    (orig_module, orig_qualname, orig_file)
+                } else {
+                    // Fallback to regular class info
+                    let class = handler
+                        .getattr(py, "__class__")
+                        .unwrap_or_else(|_| handler.clone_ref(py));
+
+                    let module = class
+                        .getattr(py, "__module__")
+                        .ok()
+                        .and_then(|m| m.extract::<String>(py).ok());
+                    let qualname = class
+                        .getattr(py, "__qualname__")
+                        .ok()
+                        .and_then(|q| q.extract::<String>(py).ok());
+
+                    // Get __file__ from module
+                    let file = module.as_ref().and_then(|module_str| {
+                        py.import("sys")
+                            .ok()
+                            .and_then(|sys| sys.getattr("modules").ok())
+                            .and_then(|modules| modules.get_item(module_str).ok())
+                            .and_then(|mod_obj| mod_obj.getattr("__file__").ok())
+                            .and_then(|f| f.extract::<String>().ok())
+                    });
+
+                    (module, qualname, file)
+                }
+            };
+
+            if let Some(m) = module {
+                meta.insert("module".to_string(), m);
+            }
+            if let Some(q) = qualname {
+                meta.insert("class".to_string(), q);
+            }
+            if let Some(f) = file {
+                meta.insert("file".to_string(), f);
+            }
+
+            meta
+        });
+
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let options = pulsing_actor::system::SpawnOptions::new()
                 .public(public)
-                .supervision(supervision);
+                .supervision(supervision)
+                .metadata(metadata);
 
             let actor_ref = if matches!(policy, RestartPolicy::Never) {
                 // handler is the instance
@@ -1069,7 +1173,7 @@ impl PyActorSystem {
         self.inner.local_actor_names()
     }
 
-    /// Get all instances of a named actor across the cluster
+    /// Get all instances of a named actor across the cluster (with detailed info)
     fn get_named_instances<'py>(
         &self,
         py: Python<'py>,
@@ -1079,19 +1183,45 @@ impl PyActorSystem {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let path = ActorPath::new(format!("actors/{}", name)).map_err(to_pyerr)?;
-            let instances: Vec<pulsing_actor::cluster::MemberInfo> =
-                system.get_named_instances(&path).await;
-            let result: Vec<std::collections::HashMap<String, String>> = instances
+            let instances = system.get_named_instances_detailed(&path).await;
+            let result: Vec<std::collections::HashMap<String, serde_json::Value>> = instances
                 .into_iter()
-                .map(|m| {
+                .map(|(member, instance_opt)| {
                     let mut map = std::collections::HashMap::new();
-                    map.insert("node_id".to_string(), m.node_id.to_string());
-                    map.insert("addr".to_string(), m.addr.to_string());
-                    map.insert("status".to_string(), format!("{:?}", m.status));
+                    map.insert(
+                        "node_id".to_string(),
+                        serde_json::Value::String(member.node_id.to_string()),
+                    );
+                    map.insert(
+                        "addr".to_string(),
+                        serde_json::Value::String(member.addr.to_string()),
+                    );
+                    map.insert(
+                        "status".to_string(),
+                        serde_json::Value::String(format!("{:?}", member.status)),
+                    );
+
+                    // Add detailed instance info if available
+                    if let Some(inst) = instance_opt {
+                        map.insert(
+                            "actor_id".to_string(),
+                            serde_json::Value::String(inst.actor_id.to_string()),
+                        );
+                        // Add metadata fields
+                        for (k, v) in inst.metadata {
+                            map.insert(k, serde_json::Value::String(v));
+                        }
+                    }
+
                     map
                 })
                 .collect();
-            Ok(result)
+
+            Python::with_gil(|py| -> PyResult<PyObject> {
+                use pythonize::pythonize;
+                let pyobj = pythonize(py, &result)?;
+                Ok(pyobj.into())
+            })
         })
     }
 
@@ -1118,13 +1248,43 @@ impl PyActorSystem {
                                 info.instance_count(),
                             )),
                         );
-                        // Convert instances (HashSet<NodeId>) to list of node IDs as strings
+                        // Convert instance_nodes (HashSet<NodeId>) to list of node IDs as strings
                         let instances: Vec<serde_json::Value> = info
-                            .instances
+                            .instance_nodes
                             .iter()
                             .map(|id| serde_json::Value::String(id.to_string()))
                             .collect();
                         map.insert("instances".to_string(), serde_json::Value::Array(instances));
+
+                        // Add detailed instance info if available
+                        let detailed: Vec<serde_json::Value> = info
+                            .instances
+                            .iter()
+                            .map(|(node_id, inst)| {
+                                let mut inst_map = serde_json::Map::new();
+                                inst_map.insert(
+                                    "node_id".to_string(),
+                                    serde_json::Value::String(node_id.to_string()),
+                                );
+                                inst_map.insert(
+                                    "actor_id".to_string(),
+                                    serde_json::Value::String(inst.actor_id.to_string()),
+                                );
+                                // Add metadata
+                                for (k, v) in &inst.metadata {
+                                    inst_map
+                                        .insert(k.clone(), serde_json::Value::String(v.clone()));
+                                }
+                                serde_json::Value::Object(inst_map)
+                            })
+                            .collect();
+                        if !detailed.is_empty() {
+                            map.insert(
+                                "detailed_instances".to_string(),
+                                serde_json::Value::Array(detailed),
+                            );
+                        }
+
                         map
                     })
                     .collect();

@@ -2,7 +2,7 @@
 
 use crate::actor::{ActorId, ActorPath, NodeId};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::Instant;
 
@@ -223,6 +223,42 @@ impl ActorLocation {
     }
 }
 
+/// Instance details for a named actor on a specific node
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NamedActorInstance {
+    /// The node ID where this instance is running
+    pub node_id: NodeId,
+    /// The actor ID of this instance
+    pub actor_id: ActorId,
+    /// Metadata (e.g., Python class, module, file path)
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+impl NamedActorInstance {
+    /// Create a new instance with just node_id and actor_id
+    pub fn new(node_id: NodeId, actor_id: ActorId) -> Self {
+        Self {
+            node_id,
+            actor_id,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create with metadata
+    pub fn with_metadata(
+        node_id: NodeId,
+        actor_id: ActorId,
+        metadata: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            node_id,
+            actor_id,
+            metadata,
+        }
+    }
+}
+
 /// Named actor registration info - supports multiple instances
 ///
 /// A named actor can have multiple instances across different nodes.
@@ -232,8 +268,12 @@ pub struct NamedActorInfo {
     /// Actor path (namespace/path/name)
     pub path: ActorPath,
 
-    /// All instances (node IDs where this actor is deployed)
-    pub instances: HashSet<NodeId>,
+    /// All instances mapped by node_id
+    pub instances: HashMap<NodeId, NamedActorInstance>,
+
+    /// Legacy: just node IDs for backward compatibility
+    #[serde(default)]
+    pub instance_nodes: HashSet<NodeId>,
 
     /// Version number for conflict resolution (CRDT-like merge)
     pub version: u64,
@@ -244,32 +284,59 @@ impl NamedActorInfo {
     pub fn new(path: ActorPath) -> Self {
         Self {
             path,
-            instances: HashSet::new(),
+            instances: HashMap::new(),
+            instance_nodes: HashSet::new(),
             version: 0,
         }
     }
 
-    /// Create with a single instance
+    /// Create with a single instance (legacy, no actor_id)
     pub fn with_instance(path: ActorPath, node_id: NodeId) -> Self {
-        let mut instances = HashSet::new();
-        instances.insert(node_id);
+        let mut instance_nodes = HashSet::new();
+        instance_nodes.insert(node_id);
         Self {
             path,
-            instances,
+            instances: HashMap::new(),
+            instance_nodes,
             version: 1,
         }
     }
 
-    /// Add an instance
+    /// Create with full instance details
+    pub fn with_full_instance(path: ActorPath, instance: NamedActorInstance) -> Self {
+        let mut instances = HashMap::new();
+        let mut instance_nodes = HashSet::new();
+        let node_id = instance.node_id;
+        instance_nodes.insert(node_id);
+        instances.insert(node_id, instance);
+        Self {
+            path,
+            instances,
+            instance_nodes,
+            version: 1,
+        }
+    }
+
+    /// Add an instance (legacy, no actor_id)
     pub fn add_instance(&mut self, node_id: NodeId) {
-        if self.instances.insert(node_id) {
+        if self.instance_nodes.insert(node_id) {
             self.version += 1;
         }
     }
 
+    /// Add a full instance with details
+    pub fn add_full_instance(&mut self, instance: NamedActorInstance) {
+        let node_id = instance.node_id;
+        self.instance_nodes.insert(node_id);
+        self.instances.insert(node_id, instance);
+        self.version += 1;
+    }
+
     /// Remove an instance
     pub fn remove_instance(&mut self, node_id: &NodeId) -> bool {
-        if self.instances.remove(node_id) {
+        let removed_node = self.instance_nodes.remove(node_id);
+        let removed_instance = self.instances.remove(node_id).is_some();
+        if removed_node || removed_instance {
             self.version += 1;
             true
         } else {
@@ -279,18 +346,32 @@ impl NamedActorInfo {
 
     /// Check if the actor has any instances
     pub fn is_empty(&self) -> bool {
-        self.instances.is_empty()
+        self.instance_nodes.is_empty() && self.instances.is_empty()
     }
 
     /// Get the number of instances
     pub fn instance_count(&self) -> usize {
-        self.instances.len()
+        // Use instance_nodes for count (backward compatible)
+        self.instance_nodes.len()
+    }
+
+    /// Get all node IDs where this actor has instances
+    pub fn node_ids(&self) -> impl Iterator<Item = &NodeId> {
+        self.instance_nodes.iter()
+    }
+
+    /// Get instance details for a node
+    pub fn get_instance(&self, node_id: &NodeId) -> Option<&NamedActorInstance> {
+        self.instances.get(node_id)
     }
 
     /// Merge with another NamedActorInfo (union of instances)
     pub fn merge(&mut self, other: &NamedActorInfo) {
-        for node_id in &other.instances {
-            self.instances.insert(*node_id);
+        for node_id in &other.instance_nodes {
+            self.instance_nodes.insert(*node_id);
+        }
+        for (node_id, instance) in &other.instances {
+            self.instances.insert(*node_id, instance.clone());
         }
         self.version = self.version.max(other.version) + 1;
     }
@@ -299,7 +380,7 @@ impl NamedActorInfo {
     pub fn select_instance(&self) -> Option<NodeId> {
         use rand::prelude::IteratorRandom;
         let mut rng = rand::rng();
-        self.instances.iter().choose(&mut rng).cloned()
+        self.instance_nodes.iter().choose(&mut rng).cloned()
     }
 }
 
@@ -508,7 +589,7 @@ mod tests {
         assert_eq!(info.instance_count(), 1);
         assert!(!info.is_empty());
         assert_eq!(info.version, 1);
-        assert!(info.instances.contains(&node_id));
+        assert!(info.instance_nodes.contains(&node_id));
     }
 
     #[test]
@@ -570,9 +651,9 @@ mod tests {
         info1.merge(&info2);
 
         assert_eq!(info1.instance_count(), 3);
-        assert!(info1.instances.contains(&node1));
-        assert!(info1.instances.contains(&node2));
-        assert!(info1.instances.contains(&node3));
+        assert!(info1.instance_nodes.contains(&node1));
+        assert!(info1.instance_nodes.contains(&node2));
+        assert!(info1.instance_nodes.contains(&node3));
     }
 
     #[test]
@@ -625,5 +706,144 @@ mod tests {
         // Dead supersedes Alive at same incarnation
         assert!(dead.supersedes(&alive));
         assert!(!alive.supersedes(&dead));
+    }
+
+    // ========================================================================
+    // NamedActorInstance Tests
+    // ========================================================================
+
+    #[test]
+    fn test_named_actor_instance_new() {
+        let node_id = NodeId::generate();
+        let actor_id = ActorId::local(42);
+
+        let instance = NamedActorInstance::new(node_id, actor_id);
+
+        assert_eq!(instance.node_id, node_id);
+        assert_eq!(instance.actor_id, actor_id);
+        assert!(instance.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_named_actor_instance_with_metadata() {
+        let node_id = NodeId::generate();
+        let actor_id = ActorId::local(42);
+        let mut metadata = HashMap::new();
+        metadata.insert("class".to_string(), "Counter".to_string());
+        metadata.insert("module".to_string(), "__main__".to_string());
+        metadata.insert("file".to_string(), "/app/main.py".to_string());
+
+        let instance = NamedActorInstance::with_metadata(node_id, actor_id, metadata.clone());
+
+        assert_eq!(instance.node_id, node_id);
+        assert_eq!(instance.actor_id, actor_id);
+        assert_eq!(instance.metadata.get("class"), Some(&"Counter".to_string()));
+        assert_eq!(
+            instance.metadata.get("module"),
+            Some(&"__main__".to_string())
+        );
+        assert_eq!(
+            instance.metadata.get("file"),
+            Some(&"/app/main.py".to_string())
+        );
+    }
+
+    #[test]
+    fn test_named_actor_info_with_full_instance() {
+        let path = ActorPath::new("actors/counter").unwrap();
+        let node_id = NodeId::generate();
+        let actor_id = ActorId::local(42);
+        let mut metadata = HashMap::new();
+        metadata.insert("class".to_string(), "Counter".to_string());
+
+        let instance = NamedActorInstance::with_metadata(node_id, actor_id, metadata);
+        let info = NamedActorInfo::with_full_instance(path.clone(), instance);
+
+        assert_eq!(info.path, path);
+        assert_eq!(info.instance_count(), 1);
+        assert!(info.instance_nodes.contains(&node_id));
+        assert!(info.instances.contains_key(&node_id));
+
+        let retrieved = info.get_instance(&node_id).unwrap();
+        assert_eq!(retrieved.actor_id, actor_id);
+        assert_eq!(
+            retrieved.metadata.get("class"),
+            Some(&"Counter".to_string())
+        );
+    }
+
+    #[test]
+    fn test_named_actor_info_add_full_instance() {
+        let path = ActorPath::new("actors/counter").unwrap();
+        let node1 = NodeId::generate();
+        let node2 = NodeId::generate();
+        let actor_id1 = ActorId::local(1);
+        let actor_id2 = ActorId::local(2);
+
+        let mut info = NamedActorInfo::new(path);
+
+        let instance1 = NamedActorInstance::new(node1, actor_id1);
+        info.add_full_instance(instance1);
+        assert_eq!(info.instance_count(), 1);
+
+        let instance2 = NamedActorInstance::new(node2, actor_id2);
+        info.add_full_instance(instance2);
+        assert_eq!(info.instance_count(), 2);
+
+        assert!(info.get_instance(&node1).is_some());
+        assert!(info.get_instance(&node2).is_some());
+        assert_eq!(info.get_instance(&node1).unwrap().actor_id, actor_id1);
+        assert_eq!(info.get_instance(&node2).unwrap().actor_id, actor_id2);
+    }
+
+    #[test]
+    fn test_named_actor_info_get_instance_not_found() {
+        let path = ActorPath::new("actors/counter").unwrap();
+        let node_id = NodeId::generate();
+
+        let info = NamedActorInfo::new(path);
+
+        assert!(info.get_instance(&node_id).is_none());
+    }
+
+    #[test]
+    fn test_named_actor_info_merge_with_full_instances() {
+        let path = ActorPath::new("actors/counter").unwrap();
+        let node1 = NodeId::generate();
+        let node2 = NodeId::generate();
+        let actor_id1 = ActorId::local(1);
+        let actor_id2 = ActorId::local(2);
+
+        let mut metadata1 = HashMap::new();
+        metadata1.insert("class".to_string(), "Counter".to_string());
+        let instance1 = NamedActorInstance::with_metadata(node1, actor_id1, metadata1);
+        let mut info1 = NamedActorInfo::with_full_instance(path.clone(), instance1);
+
+        let mut metadata2 = HashMap::new();
+        metadata2.insert("class".to_string(), "Counter".to_string());
+        let instance2 = NamedActorInstance::with_metadata(node2, actor_id2, metadata2);
+        let info2 = NamedActorInfo::with_full_instance(path.clone(), instance2);
+
+        info1.merge(&info2);
+
+        assert_eq!(info1.instance_count(), 2);
+        assert!(info1.get_instance(&node1).is_some());
+        assert!(info1.get_instance(&node2).is_some());
+    }
+
+    #[test]
+    fn test_named_actor_info_node_ids_iterator() {
+        let path = ActorPath::new("actors/counter").unwrap();
+        let node1 = NodeId::generate();
+        let node2 = NodeId::generate();
+
+        let mut info = NamedActorInfo::new(path);
+        info.add_instance(node1);
+        info.add_instance(node2);
+
+        let node_ids: Vec<_> = info.node_ids().collect();
+        assert_eq!(node_ids.len(), 2);
+        assert!(node_ids.contains(&&node1));
+        assert!(node_ids.contains(&&node2));
     }
 }
