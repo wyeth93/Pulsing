@@ -139,10 +139,9 @@ impl ActorContext {
         msg: M,
         delay: Duration,
     ) -> anyhow::Result<()> {
-        let sender = self
-            .self_sender
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("No self sender available (context not fully initialized)"))?;
+        let sender = self.self_sender.clone().ok_or_else(|| {
+            anyhow::anyhow!("No self sender available (context not fully initialized)")
+        })?;
 
         // Serialize the message
         let message = Message::pack(&msg)?;

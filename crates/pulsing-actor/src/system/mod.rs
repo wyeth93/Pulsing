@@ -298,7 +298,11 @@ impl ActorSystem {
     }
 
     /// Spawn an actor with a local name (uses system default mailbox capacity)
-    pub async fn spawn<A>(self: &Arc<Self>, name: impl AsRef<str>, actor: A) -> anyhow::Result<ActorRef>
+    pub async fn spawn<A>(
+        self: &Arc<Self>,
+        name: impl AsRef<str>,
+        actor: A,
+    ) -> anyhow::Result<ActorRef>
     where
         A: Actor,
     {
@@ -792,11 +796,57 @@ impl ActorSystem {
     }
 
     /// Shutdown the entire actor system
+    ///
+    /// This method performs a graceful shutdown:
+    /// 1. Signals cancellation to all actors
+    /// 2. Triggers lifecycle cleanup for each actor (watch notifications, cluster broadcast, etc.)
+    /// 3. Leaves the cluster gracefully
+    /// 4. Clears all actors and watch relationships
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         tracing::info!("Shutting down actor system");
 
-        // Signal cancellation
+        // Signal cancellation first - this tells actors to stop processing new messages
         self.cancel_token.cancel();
+
+        // Collect all actor info before processing to avoid holding locks during cleanup
+        let actor_entries: Vec<_> = self
+            .local_actors
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry.actor_id,
+                    entry.named_path.clone(),
+                    entry.join_handle.abort_handle(),
+                )
+            })
+            .collect();
+
+        // Process each actor's termination with proper lifecycle handling
+        for (actor_name, actor_id, named_path, abort_handle) in actor_entries {
+            // Abort the actor task
+            abort_handle.abort();
+
+            // Trigger lifecycle cleanup (watch notifications, cluster broadcast, routing cleanup)
+            let local_actors = self.local_actors.clone();
+            self.lifecycle
+                .handle_termination(
+                    &actor_id,
+                    &actor_name,
+                    named_path,
+                    StopReason::SystemShutdown,
+                    &self.named_actor_paths,
+                    &self.cluster,
+                    |name| local_actors.get(name).map(|h| h.sender.clone()),
+                )
+                .await;
+        }
+
+        // Clear all actors
+        self.local_actors.clear();
+
+        // Clear all watch relationships
+        self.lifecycle.clear().await;
 
         // Leave cluster gracefully
         {
@@ -806,12 +856,7 @@ impl ActorSystem {
             }
         }
 
-        // Stop all actors
-        for entry in self.local_actors.iter() {
-            entry.join_handle.abort();
-        }
-        self.local_actors.clear();
-
+        tracing::info!("Actor system shutdown complete");
         Ok(())
     }
 
