@@ -201,62 +201,9 @@ impl Http2Server {
             return Self::serve_h2_generic(io, peer_addr, handler, config, cancel).await;
         }
 
-        // Plain TCP mode (h2c)
+        // Plain TCP mode (h2c) - HTTP/2 only (prior knowledge)
         let io = TokioIo::new(stream);
-
-        // Try to detect HTTP/2 preface
-        // For simplicity, we'll use auto detection with http1 fallback
-        if config.enable_http1_fallback {
-            // Use auto connection that handles both HTTP/1.1 and HTTP/2
-            Self::serve_auto(io, peer_addr, handler, config, cancel).await
-        } else {
-            // HTTP/2 only (prior knowledge)
-            Self::serve_h2(io, peer_addr, handler, config, cancel).await
-        }
-    }
-
-    /// Serve with automatic HTTP version detection
-    async fn serve_auto(
-        io: TokioIo<tokio::net::TcpStream>,
-        peer_addr: SocketAddr,
-        handler: Arc<dyn Http2ServerHandler>,
-        config: Http2Config,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<()> {
-        // For now, we'll check the first bytes to detect HTTP/2
-        // HTTP/2 preface starts with "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-        // This is a simplified approach - in production you might use hyper-util's auto
-
-        let service = service_fn(move |req| {
-            let handler = handler.clone();
-            async move { Self::handle_request(req, handler, peer_addr).await }
-        });
-
-        // Try HTTP/2 first, fall back to HTTP/1.1
-        let mut h2_builder = http2::Builder::new(TokioExecutor::new());
-        h2_builder
-            .max_concurrent_streams(config.max_concurrent_streams)
-            .initial_stream_window_size(config.initial_window_size)
-            .initial_connection_window_size(config.initial_connection_window_size)
-            .max_frame_size(config.max_frame_size)
-            .max_header_list_size(config.max_header_list_size);
-
-        let conn = h2_builder.serve_connection(io, service);
-
-        tokio::select! {
-            result = conn => {
-                if let Err(e) = result {
-                    // If HTTP/2 fails, the connection might be HTTP/1.1
-                    // For now, just log and continue
-                    tracing::debug!(peer = %peer_addr, error = %e, "Connection ended");
-                }
-            }
-            _ = cancel.cancelled() => {
-                tracing::debug!(peer = %peer_addr, "Connection cancelled");
-            }
-        }
-
-        Ok(())
+        Self::serve_h2(io, peer_addr, handler, config, cancel).await
     }
 
     /// Serve HTTP/2 only (prior knowledge mode)

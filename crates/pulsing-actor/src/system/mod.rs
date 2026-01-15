@@ -19,7 +19,7 @@ use crate::actor::{
     NodeId, StopReason,
 };
 use crate::cluster::{GossipCluster, MemberInfo, MemberStatus, NamedActorInfo};
-use crate::policies::{LoadBalancingPolicy, RoundRobinPolicy};
+use crate::policies::{LoadBalancingPolicy, RoundRobinPolicy, Worker};
 use crate::system_actor::{
     BoxedActorFactory, SystemActor, SystemRef, SYSTEM_ACTOR_LOCAL_NAME, SYSTEM_ACTOR_PATH,
 };
@@ -35,6 +35,52 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+/// Wrapper to adapt MemberInfo to the Worker trait for load balancing
+#[derive(Debug)]
+struct MemberWorker {
+    url: String,
+    is_alive: bool,
+}
+
+impl MemberWorker {
+    fn new(member: &MemberInfo) -> Self {
+        Self {
+            url: member.addr.to_string(),
+            is_alive: member.status == MemberStatus::Alive,
+        }
+    }
+}
+
+impl Worker for MemberWorker {
+    fn url(&self) -> &str {
+        &self.url
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.is_alive
+    }
+
+    fn set_healthy(&mut self, healthy: bool) {
+        self.is_alive = healthy;
+    }
+
+    fn load(&self) -> usize {
+        0 // MemberInfo doesn't track load
+    }
+
+    fn increment_load(&self) {}
+    fn decrement_load(&self) {}
+    fn increment_processed(&self) {}
+
+    fn processed(&self) -> u64 {
+        0
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 /// The Actor System - manages actors and cluster membership
 pub struct ActorSystem {
@@ -252,7 +298,7 @@ impl ActorSystem {
     }
 
     /// Spawn an actor with a local name (uses system default mailbox capacity)
-    pub async fn spawn<A>(&self, name: impl AsRef<str>, actor: A) -> anyhow::Result<ActorRef>
+    pub async fn spawn<A>(self: &Arc<Self>, name: impl AsRef<str>, actor: A) -> anyhow::Result<ActorRef>
     where
         A: Actor,
     {
@@ -262,7 +308,7 @@ impl ActorSystem {
 
     /// Spawn an actor with custom options
     pub async fn spawn_with_options<A>(
-        &self,
+        self: &Arc<Self>,
         name: impl AsRef<str>,
         actor: A,
         options: SpawnOptions,
@@ -276,7 +322,7 @@ impl ActorSystem {
 
     /// Spawn an actor using a factory function (enables supervision restarts)
     pub async fn spawn_factory<F, A>(
-        &self,
+        self: &Arc<Self>,
         name: impl AsRef<str>,
         factory: F,
         options: SpawnOptions,
@@ -304,8 +350,13 @@ impl ActorSystem {
         let stats = Arc::new(ActorStats::default());
         let metadata = HashMap::new();
 
-        // Create context
-        let ctx = ActorContext::new(actor_id);
+        // Create context with system reference for actor_ref/watch/schedule_self
+        let ctx = ActorContext::with_system(
+            actor_id,
+            self.clone() as Arc<dyn ActorSystemRef>,
+            self.cancel_token.clone(),
+            sender.clone(),
+        );
 
         // Spawn actor loop
         let stats_clone = stats.clone();
@@ -338,7 +389,7 @@ impl ActorSystem {
 
     /// Spawn a named actor (publicly accessible via named path)
     pub async fn spawn_named<A>(
-        &self,
+        self: &Arc<Self>,
         path: ActorPath,
         local_name: impl AsRef<str>,
         actor: A,
@@ -357,7 +408,7 @@ impl ActorSystem {
 
     /// Spawn a named actor with custom options
     pub async fn spawn_named_with_options<A>(
-        &self,
+        self: &Arc<Self>,
         path: ActorPath,
         local_name: impl AsRef<str>,
         actor: A,
@@ -372,7 +423,7 @@ impl ActorSystem {
 
     /// Spawn a named actor using a factory function
     pub async fn spawn_named_factory<F, A>(
-        &self,
+        self: &Arc<Self>,
         path: ActorPath,
         local_name: impl AsRef<str>,
         factory: F,
@@ -412,8 +463,13 @@ impl ActorSystem {
         let stats = Arc::new(ActorStats::default());
         let metadata = options.metadata.clone();
 
-        // Create context
-        let ctx = ActorContext::new(actor_id);
+        // Create context with system reference for actor_ref/watch/schedule_self
+        let ctx = ActorContext::with_system(
+            actor_id,
+            self.clone() as Arc<dyn ActorSystemRef>,
+            self.cancel_token.clone(),
+            sender.clone(),
+        );
 
         // Spawn actor loop
         let stats_clone = stats.clone();
@@ -584,9 +640,14 @@ impl ActorSystem {
         instances: &'a [MemberInfo],
         policy: &dyn LoadBalancingPolicy,
     ) -> &'a MemberInfo {
-        // Convert MemberInfo to a format compatible with LoadBalancingPolicy
-        // For now, use simple index-based selection
-        let idx = policy.select_worker(&[], None).unwrap_or(0) % instances.len();
+        // Convert MemberInfo to Worker wrappers for the policy
+        let workers: Vec<Arc<dyn crate::policies::Worker>> = instances
+            .iter()
+            .map(|m| Arc::new(MemberWorker::new(m)) as Arc<dyn crate::policies::Worker>)
+            .collect();
+
+        // Use the policy to select a worker index
+        let idx = policy.select_worker(&workers, None).unwrap_or(0);
         &instances[idx]
     }
 
