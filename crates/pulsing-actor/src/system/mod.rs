@@ -11,12 +11,12 @@ mod handle;
 mod handler;
 mod runtime;
 
-pub use config::{ResolveOptions, SpawnOptions, SystemConfig};
+pub use config::{ActorSystemBuilder, ResolveOptions, SpawnOptions, SystemConfig};
 pub use handle::ActorStats;
 
 use crate::actor::{
-    Actor, ActorAddress, ActorContext, ActorId, ActorPath, ActorRef, ActorSystemRef, Mailbox,
-    NodeId, StopReason,
+    Actor, ActorAddress, ActorContext, ActorId, ActorPath, ActorRef, ActorSystemRef,
+    IntoActorPath, Mailbox, NodeId, StopReason,
 };
 use crate::cluster::{GossipCluster, MemberInfo, MemberStatus, NamedActorInfo};
 use crate::policies::{LoadBalancingPolicy, RoundRobinPolicy, Worker};
@@ -119,6 +119,17 @@ pub struct ActorSystem {
 }
 
 impl ActorSystem {
+    /// Create a builder for configuring ActorSystem
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let system = ActorSystem::builder().build().await?;
+    /// ```
+    pub fn builder() -> ActorSystemBuilder {
+        ActorSystemBuilder::new()
+    }
+
     /// Create a new actor system
     pub async fn new(config: SystemConfig) -> anyhow::Result<Arc<Self>> {
         let cancel_token = CancellationToken::new();
@@ -279,6 +290,15 @@ impl ActorSystem {
         self.local_actors.iter().map(|e| e.key().clone()).collect()
     }
 
+    /// Get a local actor reference by name
+    ///
+    /// Returns None if the actor doesn't exist locally
+    pub fn local_actor_ref_by_name(&self, name: &str) -> Option<ActorRef> {
+        self.local_actors.get(name).map(|handle| {
+            ActorRef::local(handle.actor_id, handle.sender.clone())
+        })
+    }
+
     /// Generate a new unique local actor ID
     fn next_actor_id(&self) -> ActorId {
         let local_id = self.actor_id_counter.fetch_add(1, Ordering::Relaxed);
@@ -392,15 +412,23 @@ impl ActorSystem {
     }
 
     /// Spawn a named actor (publicly accessible via named path)
-    pub async fn spawn_named<A>(
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Path can be &str, String, or ActorPath
+    /// system.spawn_named("services/echo", "echo", MyActor).await?;
+    /// ```
+    pub async fn spawn_named<P, A>(
         self: &Arc<Self>,
-        path: ActorPath,
+        path: P,
         local_name: impl AsRef<str>,
         actor: A,
     ) -> anyhow::Result<ActorRef>
     where
+        P: IntoActorPath,
         A: Actor,
     {
+        let path = path.into_actor_path()?;
         self.spawn_named_factory(
             path,
             local_name,
@@ -411,32 +439,36 @@ impl ActorSystem {
     }
 
     /// Spawn a named actor with custom options
-    pub async fn spawn_named_with_options<A>(
+    pub async fn spawn_named_with_options<P, A>(
         self: &Arc<Self>,
-        path: ActorPath,
+        path: P,
         local_name: impl AsRef<str>,
         actor: A,
         options: SpawnOptions,
     ) -> anyhow::Result<ActorRef>
     where
+        P: IntoActorPath,
         A: Actor,
     {
+        let path = path.into_actor_path()?;
         self.spawn_named_factory(path, local_name, Self::once_factory(actor), options)
             .await
     }
 
     /// Spawn a named actor using a factory function
-    pub async fn spawn_named_factory<F, A>(
+    pub async fn spawn_named_factory<P, F, A>(
         self: &Arc<Self>,
-        path: ActorPath,
+        path: P,
         local_name: impl AsRef<str>,
         factory: F,
         options: SpawnOptions,
     ) -> anyhow::Result<ActorRef>
     where
+        P: IntoActorPath,
         F: FnMut() -> anyhow::Result<A> + Send + 'static,
         A: Actor,
     {
+        let path = path.into_actor_path()?;
         let local_name = local_name.as_ref();
 
         // Check for duplicate local name
@@ -554,17 +586,27 @@ impl ActorSystem {
     }
 
     /// Resolve a named actor and get an ActorRef (uses default load balancing: RoundRobin)
-    pub async fn resolve_named(
+    /// Resolve a named actor by path
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let actor = system.resolve_named("services/echo", None).await?;
+    /// ```
+    pub async fn resolve_named<P>(
         &self,
-        path: &ActorPath,
+        path: P,
         node_id: Option<&NodeId>,
-    ) -> anyhow::Result<ActorRef> {
+    ) -> anyhow::Result<ActorRef>
+    where
+        P: IntoActorPath,
+    {
+        let path = path.into_actor_path()?;
         let options = if let Some(nid) = node_id {
             ResolveOptions::new().node_id(*nid)
         } else {
             ResolveOptions::new()
         };
-        self.resolve_named_with_options(path, options).await
+        self.resolve_named_with_options(&path, options).await
     }
 
     /// Resolve a named actor with custom options (load balancing, health filtering)
