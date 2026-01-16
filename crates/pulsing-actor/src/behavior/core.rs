@@ -2,7 +2,6 @@
 
 use super::context::BehaviorContext;
 use futures::future::BoxFuture;
-use serde::{de::DeserializeOwned, Serialize};
 use std::marker::PhantomData;
 
 /// Action returned by a behavior after processing a message
@@ -103,7 +102,6 @@ where
         Box::pin(async move { action })
     })
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -45,12 +45,12 @@
 //! counter_ref.tell(CounterMsg::Increment(5)).await?;
 //! ```
 
-mod behavior;
 mod context;
+mod core;
 mod reference;
 mod spawn;
 
-pub use behavior::{Behavior, BehaviorAction, BehaviorFn, stateful, stateless};
 pub use context::BehaviorContext;
+pub use core::{stateful, stateless, Behavior, BehaviorAction, BehaviorFn};
 pub use reference::TypedRef;
 pub use spawn::BehaviorSpawner;

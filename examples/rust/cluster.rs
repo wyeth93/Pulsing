@@ -35,11 +35,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Node 1: port 8001, no seeds. Node 2+: join via node 1
     let system = match node_num {
-        1 => ActorSystem::builder().addr("127.0.0.1:8001").build().await?,
+        1 => {
+            ActorSystem::builder()
+                .addr("127.0.0.1:8001")
+                .build()
+                .await?
+        }
         n => {
             ActorSystem::builder()
                 .addr(format!("127.0.0.1:{}", 8000 + n as u16))
-                .seeds(&["127.0.0.1:8001"])
+                .seeds(["127.0.0.1:8001"])
                 .build()
                 .await?
         }
@@ -51,10 +56,14 @@ async fn main() -> anyhow::Result<()> {
     if node_num == 1 {
         // Node 1: Create actor and wait
         system
-            .spawn_named(path, "counter", Counter {
-                count: 0,
-                node_id: system.node_id().to_string(),
-            })
+            .spawn_named(
+                path,
+                "counter",
+                Counter {
+                    count: 0,
+                    node_id: system.node_id().to_string(),
+                },
+            )
             .await?;
         println!("✓ Created named actor: {}", path);
         println!("Start node 2: cargo run --example cluster -p pulsing-actor -- --node 2\n");

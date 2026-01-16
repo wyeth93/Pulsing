@@ -1,7 +1,7 @@
 //! Spawn behavior-based actors into the ActorSystem
 
-use super::behavior::{Behavior, BehaviorAction};
 use super::context::BehaviorContext;
+use super::core::{Behavior, BehaviorAction};
 use super::reference::TypedRef;
 use crate::actor::{Actor, ActorContext, Message};
 use crate::system::{ActorSystem, SpawnOptions};
@@ -31,7 +31,12 @@ impl<M> BehaviorActor<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
-    fn new(name: String, system: Arc<ActorSystem>, behavior: Behavior<M>, buffer_size: usize) -> Self {
+    fn new(
+        name: String,
+        system: Arc<ActorSystem>,
+        behavior: Behavior<M>,
+        buffer_size: usize,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(buffer_size);
         Self {
             name,
@@ -162,9 +167,7 @@ impl BehaviorSpawner for ActorSystem {
         let name_str = name.as_ref().to_string();
         let actor = BehaviorActor::new(name_str.clone(), self.clone(), behavior, mailbox_capacity);
         let options = SpawnOptions::new().mailbox_capacity(mailbox_capacity);
-        let actor_ref = self
-            .spawn_with_options(&name_str, actor, options)
-            .await?;
+        let actor_ref = self.spawn_with_options(&name_str, actor, options).await?;
 
         Ok(TypedRef::new(&name_str, actor_ref))
     }
@@ -184,11 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_behavior() {
-        let system = Arc::new(
-            ActorSystem::new(SystemConfig::standalone())
-                .await
-                .unwrap(),
-        );
+        let system = Arc::new(ActorSystem::new(SystemConfig::standalone()).await.unwrap());
 
         let counter = stateful(0i32, |count, msg| match msg {
             TestMsg::Ping => BehaviorAction::Same,

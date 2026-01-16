@@ -84,7 +84,10 @@ async fn main() -> anyhow::Result<()> {
             let _ = tx.send(Ok(Message::pack(&v).unwrap())).await;
         }
     });
-    let total: i32 = actor.send(Message::from_channel("sum", rx)).await?.unpack()?;
+    let total: i32 = actor
+        .send(Message::from_channel("sum", rx))
+        .await?
+        .unpack()?;
     println!("Sum: {}\n", total);
 
     system.shutdown().await
