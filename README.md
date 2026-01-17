@@ -1,6 +1,6 @@
 # Pulsing
 
-[![CI](https://github.com/reiase/pulsing/actions/workflows/ci.yml/badge.svg)](https://github.com/reiase/pulsing/actions/workflows/ci.yml)
+[![CI](https://github.com/DeepLink-org/pulsing/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/pulsing/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org/)
