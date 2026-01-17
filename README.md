@@ -9,23 +9,11 @@
 
 **Lightweight distributed framework designed for high-performance AI applications.**
 
-Zero external dependencies, one line of code for distributed deployment — seamlessly scale your AI applications from a single machine to a cluster.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Your AI Application                     │
-│            Multi-Agent / LLM Serving / RAG Pipeline          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                    Pulsing Actor System
-                              │
-          ┌───────────────────┼───────────────────┐
-          ▼                   ▼                   ▼
-    ┌──────────┐        ┌──────────┐        ┌──────────┐
-    │  Node 1  │◄──────►│  Node 2  │◄──────►│  Node 3  │
-    │   GPU    │        │   CPU    │        │   CPU    │
-    └──────────┘        └──────────┘        └──────────┘
-```
+🚀 **Zero Dependencies** — Pure Rust + Tokio, no NATS/etcd/Redis  
+🌐 **Auto Discovery** — Built-in Gossip protocol for cluster management  
+🔀 **Location Transparent** — Same API for local and remote Actors  
+⚡ **Streaming Ready** — Native support for LLM streaming responses  
+🤖 **Agent Friendly** — Integrates with AutoGen, LangGraph out of the box
 
 ## 🚀 Get Started in 5 Minutes
 
