@@ -15,8 +15,8 @@ pub use config::{ActorSystemBuilder, ResolveOptions, SpawnOptions, SystemConfig}
 pub use handle::ActorStats;
 
 use crate::actor::{
-    Actor, ActorAddress, ActorContext, ActorId, ActorPath, ActorRef, ActorSystemRef, IntoActorPath,
-    Mailbox, NodeId, StopReason,
+    Actor, ActorAddress, ActorContext, ActorId, ActorPath, ActorRef, ActorResolver,
+    ActorSystemRef, IntoActorPath, Mailbox, NodeId, StopReason,
 };
 use crate::cluster::{GossipCluster, MemberInfo, MemberStatus, NamedActorInfo};
 use crate::policies::{LoadBalancingPolicy, RoundRobinPolicy, Worker};
@@ -31,23 +31,61 @@ use handler::SystemMessageHandler;
 use runtime::run_supervision_loop;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+/// Per-node load tracking
+#[derive(Debug, Default)]
+pub struct NodeLoadTracker {
+    /// Current in-flight requests to this node
+    load: AtomicUsize,
+    /// Total requests processed
+    processed: AtomicU64,
+}
+
+impl NodeLoadTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn load(&self) -> usize {
+        self.load.load(Ordering::Relaxed)
+    }
+
+    pub fn increment(&self) {
+        self.load.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn decrement(&self) {
+        self.load.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn processed(&self) -> u64 {
+        self.processed.load(Ordering::Relaxed)
+    }
+
+    pub fn increment_processed(&self) {
+        self.processed.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 /// Wrapper to adapt MemberInfo to the Worker trait for load balancing
 #[derive(Debug)]
 struct MemberWorker {
     url: String,
     is_alive: bool,
+    /// Shared load tracker for this node
+    load_tracker: Arc<NodeLoadTracker>,
 }
 
 impl MemberWorker {
-    fn new(member: &MemberInfo) -> Self {
+    fn new(member: &MemberInfo, load_tracker: Arc<NodeLoadTracker>) -> Self {
         Self {
             url: member.addr.to_string(),
             is_alive: member.status == MemberStatus::Alive,
+            load_tracker,
         }
     }
 }
@@ -66,15 +104,23 @@ impl Worker for MemberWorker {
     }
 
     fn load(&self) -> usize {
-        0 // MemberInfo doesn't track load
+        self.load_tracker.load()
     }
 
-    fn increment_load(&self) {}
-    fn decrement_load(&self) {}
-    fn increment_processed(&self) {}
+    fn increment_load(&self) {
+        self.load_tracker.increment();
+    }
+
+    fn decrement_load(&self) {
+        self.load_tracker.decrement();
+    }
+
+    fn increment_processed(&self) {
+        self.load_tracker.increment_processed();
+    }
 
     fn processed(&self) -> u64 {
-        0
+        self.load_tracker.processed()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -116,6 +162,9 @@ pub struct ActorSystem {
 
     /// Default load balancing policy
     default_lb_policy: Arc<dyn LoadBalancingPolicy>,
+
+    /// Per-node load tracking for remote nodes
+    node_load: Arc<DashMap<SocketAddr, Arc<NodeLoadTracker>>>,
 }
 
 impl ActorSystem {
@@ -190,6 +239,7 @@ impl ActorSystem {
             lifecycle,
             actor_id_counter: AtomicU64::new(1),
             default_lb_policy: Arc::new(RoundRobinPolicy::new()),
+            node_load: Arc::new(DashMap::new()),
         });
 
         // Start the builtin SystemActor with path "system"
@@ -585,8 +635,11 @@ impl ActorSystem {
         Ok(ActorRef::remote(*id, member.addr, Arc::new(transport)))
     }
 
-    /// Resolve a named actor and get an ActorRef (uses default load balancing: RoundRobin)
-    /// Resolve a named actor by path
+    /// Resolve a named actor by path (direct resolution)
+    ///
+    /// Returns an ActorRef that points to the current location of the named actor.
+    /// Note: If the actor migrates, this reference may become stale.
+    /// For actors that may migrate, consider using `resolve_named_lazy`.
     ///
     /// # Example
     /// ```rust,ignore
@@ -607,6 +660,38 @@ impl ActorSystem {
             ResolveOptions::new()
         };
         self.resolve_named_with_options(&path, options).await
+    }
+
+    /// Resolve a named actor with lazy resolution (re-resolves after cache expires)
+    ///
+    /// Returns an ActorRef that automatically re-resolves after 5 seconds.
+    /// This is useful for named actors that may migrate between nodes.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let actor = system.resolve_named_lazy("services/echo").await?;
+    /// // Even if the actor migrates, this ref will find it after cache expires
+    /// ```
+    pub fn resolve_named_lazy<P>(self: &Arc<Self>, path: P) -> anyhow::Result<ActorRef>
+    where
+        P: IntoActorPath,
+    {
+        let path = path.into_actor_path()?;
+        Ok(ActorRef::lazy(path, self.clone() as Arc<dyn ActorResolver>))
+    }
+
+    /// Internal: Direct resolution for ActorResolver trait
+    async fn resolve_named_direct(
+        &self,
+        path: &ActorPath,
+        node_id: Option<&NodeId>,
+    ) -> anyhow::Result<ActorRef> {
+        let options = if let Some(nid) = node_id {
+            ResolveOptions::new().node_id(*nid)
+        } else {
+            ResolveOptions::new()
+        };
+        self.resolve_named_with_options(path, options).await
     }
 
     /// Resolve a named actor with custom options (load balancing, health filtering)
@@ -686,15 +771,42 @@ impl ActorSystem {
         instances: &'a [MemberInfo],
         policy: &dyn LoadBalancingPolicy,
     ) -> &'a MemberInfo {
-        // Convert MemberInfo to Worker wrappers for the policy
+        // Convert MemberInfo to Worker wrappers with load tracking
         let workers: Vec<Arc<dyn crate::policies::Worker>> = instances
             .iter()
-            .map(|m| Arc::new(MemberWorker::new(m)) as Arc<dyn crate::policies::Worker>)
+            .map(|m| {
+                // Get or create load tracker for this node
+                let tracker = self
+                    .node_load
+                    .entry(m.addr)
+                    .or_insert_with(|| Arc::new(NodeLoadTracker::new()))
+                    .clone();
+                Arc::new(MemberWorker::new(m, tracker)) as Arc<dyn crate::policies::Worker>
+            })
             .collect();
 
         // Use the policy to select a worker index
         let idx = policy.select_worker(&workers, None).unwrap_or(0);
+
+        // Increment load for selected node (caller should decrement after request completes)
+        if let Some(tracker) = self.node_load.get(&instances[idx].addr) {
+            tracker.increment();
+        }
+
         &instances[idx]
+    }
+
+    /// Get load tracker for a node address
+    pub fn get_node_load_tracker(&self, addr: &SocketAddr) -> Option<Arc<NodeLoadTracker>> {
+        self.node_load.get(addr).map(|r| r.clone())
+    }
+
+    /// Decrement load after a request completes
+    pub fn decrement_node_load(&self, addr: &SocketAddr) {
+        if let Some(tracker) = self.node_load.get(addr) {
+            tracker.decrement();
+            tracker.increment_processed();
+        }
     }
 
     /// Resolve an actor address and get an ActorRef
@@ -938,5 +1050,16 @@ impl ActorSystemRef for ActorSystem {
         let target_key = target.to_string();
         self.lifecycle.unwatch(&watcher_key, &target_key).await;
         Ok(())
+    }
+}
+
+/// Implement ActorResolver for ActorSystem
+///
+/// This enables lazy ActorRef to resolve named actors on demand.
+#[async_trait::async_trait]
+impl ActorResolver for ActorSystem {
+    async fn resolve_path(&self, path: &ActorPath) -> anyhow::Result<ActorRef> {
+        // Use direct resolution (not lazy) to avoid infinite recursion
+        self.resolve_named_direct(path, None).await
     }
 }

@@ -63,8 +63,15 @@ pub struct GossipConfig {
     pub seed_rejoin_interval: Option<Duration>,
     /// Timeout before marking a node as PFail
     pub failure_timeout: Duration,
-    /// Grace period before removing Fail nodes
+    /// Grace period before marking Fail nodes as Tombstone
     pub cleanup_grace_period: Duration,
+    /// Tombstone retention period before final removal
+    /// Tombstoned nodes won't be removed immediately, allowing them to recover
+    /// and rejoin without causing routing churn
+    pub tombstone_retention: Duration,
+    /// Observation window: if a Fail node is seen alive within this window,
+    /// it will be recovered instead of tombstoned
+    pub recovery_observation_window: Duration,
     /// SWIM config (for ping interval and suspicion timeout)
     pub swim: SwimConfig,
 }
@@ -80,7 +87,14 @@ impl Default for GossipConfig {
             // Increased from 5s to 15s for better tolerance in high-load scenarios
             // In large-scale stress tests, gossip messages may be delayed due to high load
             failure_timeout: Duration::from_secs(15),
-            cleanup_grace_period: Duration::from_secs(30),
+            // Grace period before tombstoning (increased for stability)
+            cleanup_grace_period: Duration::from_secs(60),
+            // Tombstone retention: 5 minutes before final removal
+            // This allows nodes to recover from longer network partitions
+            tombstone_retention: Duration::from_secs(300),
+            // Recovery observation window: 30 seconds
+            // If we see the node alive within this window, recover it
+            recovery_observation_window: Duration::from_secs(30),
             swim: SwimConfig::default(),
         }
     }
@@ -295,10 +309,17 @@ impl ClusterState {
         let mut nodes = self.cluster_nodes.write().await;
         if let Some(node) = nodes.get_mut(&node_id) {
             node.last_seen = now_millis();
-            if node.status == NodeStatus::PFail {
+            // Recover from any failed/tombstone state if node is seen alive
+            if node.status.can_recover() {
+                let old_status = node.status;
                 node.status = NodeStatus::Online;
                 node.epoch = self.increment_epoch();
-                tracing::info!(node_id = %node_id, "Node recovered from PFail");
+                tracing::info!(
+                    node_id = %node_id,
+                    old_status = ?old_status,
+                    "Node recovered from {:?}",
+                    old_status
+                );
             }
         }
     }
@@ -307,6 +328,7 @@ impl ClusterState {
     fn node_to_member(node: &ClusterNode) -> MemberInfo {
         let status = match node.status {
             NodeStatus::Online | NodeStatus::Handshake => MemberStatus::Alive,
+            NodeStatus::Tombstone => MemberStatus::Dead, // Tombstoned nodes are treated as dead
             NodeStatus::PFail => MemberStatus::Suspect,
             NodeStatus::Fail => MemberStatus::Dead,
         };
@@ -1027,10 +1049,14 @@ async fn detect_failures(state: &ClusterState, config: &GossipConfig) {
     let failure_timeout_ms = config.failure_timeout.as_millis() as u64;
     let suspicion_timeout_ms = config.swim.suspicion_timeout.as_millis() as u64;
     let cleanup_ms = config.cleanup_grace_period.as_millis() as u64;
+    let tombstone_ms = config.tombstone_retention.as_millis() as u64;
+    let recovery_window_ms = config.recovery_observation_window.as_millis() as u64;
 
     let mut pfail_nodes = Vec::new();
     let mut fail_nodes = Vec::new();
+    let mut tombstone_nodes = Vec::new();
     let mut remove_nodes = Vec::new();
+    let mut recover_nodes = Vec::new();
 
     {
         let nodes = state.cluster_nodes.read().await;
@@ -1048,10 +1074,45 @@ async fn detect_failures(state: &ClusterState, config: &GossipConfig) {
                 NodeStatus::PFail if elapsed > suspicion_timeout_ms => {
                     fail_nodes.push(node.node_id);
                 }
-                NodeStatus::Fail if elapsed > cleanup_ms => {
-                    remove_nodes.push(node.node_id);
+                // Check if Fail node should be recovered (seen recently) or tombstoned
+                NodeStatus::Fail => {
+                    if elapsed <= recovery_window_ms {
+                        // Node was seen recently, recover it
+                        recover_nodes.push(node.node_id);
+                    } else if elapsed > cleanup_ms {
+                        // Grace period expired, move to tombstone
+                        tombstone_nodes.push(node.node_id);
+                    }
+                }
+                // Tombstoned nodes: check for recovery or final removal
+                NodeStatus::Tombstone => {
+                    if elapsed <= recovery_window_ms {
+                        // Node came back alive, recover it
+                        recover_nodes.push(node.node_id);
+                    } else if elapsed > tombstone_ms {
+                        // Tombstone retention expired, final removal
+                        remove_nodes.push(node.node_id);
+                    }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    // Recover nodes that came back alive
+    for node_id in recover_nodes {
+        let mut nodes = state.cluster_nodes.write().await;
+        if let Some(node) = nodes.get_mut(&node_id) {
+            if node.status.can_recover() {
+                let old_status = node.status;
+                node.status = NodeStatus::Online;
+                node.epoch = state.increment_epoch();
+                tracing::info!(
+                    node_id = %node_id,
+                    old_status = ?old_status,
+                    "Node recovered from {:?} to Online",
+                    old_status
+                );
             }
         }
     }
@@ -1092,27 +1153,48 @@ async fn detect_failures(state: &ClusterState, config: &GossipConfig) {
         }
     }
 
-    // Cleanup Fail nodes and their named actors
-    if !remove_nodes.is_empty() {
+    // Tombstone Fail nodes: clear their named actors but retain node info for recovery
+    if !tombstone_nodes.is_empty() {
         let mut nodes = state.cluster_nodes.write().await;
         let mut named = state.named_actors.write().await;
 
-        for node_id in &remove_nodes {
-            if nodes
-                .get(node_id)
-                .map(|n| n.status == NodeStatus::Fail)
-                .unwrap_or(false)
-            {
-                tracing::info!(node_id = %node_id, "Removing failed node");
-                nodes.remove(node_id);
+        for node_id in &tombstone_nodes {
+            if let Some(node) = nodes.get_mut(node_id) {
+                if node.status == NodeStatus::Fail {
+                    node.status = NodeStatus::Tombstone;
+                    node.epoch = state.increment_epoch();
+                    tracing::info!(
+                        node_id = %node_id,
+                        "Tombstoned failed node (named actors cleared, node info retained)"
+                    );
 
-                // Clean up named actors on this node
-                for info in named.values_mut() {
-                    info.remove_instance(node_id);
+                    // Clean up named actors on this node (but keep node info)
+                    for info in named.values_mut() {
+                        info.remove_instance(node_id);
+                    }
                 }
             }
         }
         named.retain(|_, info| !info.is_empty());
+    }
+
+    // Final removal of tombstoned nodes after retention period
+    if !remove_nodes.is_empty() {
+        let mut nodes = state.cluster_nodes.write().await;
+
+        for node_id in &remove_nodes {
+            if nodes
+                .get(node_id)
+                .map(|n| n.status == NodeStatus::Tombstone)
+                .unwrap_or(false)
+            {
+                tracing::info!(
+                    node_id = %node_id,
+                    "Permanently removing tombstoned node after retention period"
+                );
+                nodes.remove(node_id);
+            }
+        }
     }
 }
 

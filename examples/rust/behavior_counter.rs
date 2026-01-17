@@ -6,7 +6,7 @@ use pulsing_actor::behavior::{stateful, Behavior, BehaviorAction, BehaviorSpawne
 use pulsing_actor::system::ActorSystem;
 
 fn counter(init: i32) -> Behavior<i32> {
-    stateful(init, |count, n| {
+    stateful(init, |count, n, _ctx| {
         *count += n;
         println!("count = {}", *count);
         BehaviorAction::Same

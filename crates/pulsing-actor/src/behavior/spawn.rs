@@ -8,7 +8,6 @@ use crate::system::{ActorSystem, SpawnOptions};
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 /// Wrapper that bridges Behavior to the traditional Actor trait
@@ -21,9 +20,6 @@ where
     /// Reference to the actor system
     system: Arc<ActorSystem>,
     behavior: Mutex<Behavior<M>>,
-    #[allow(dead_code)]
-    msg_receiver: Mutex<mpsc::Receiver<M>>,
-    msg_sender: mpsc::Sender<M>,
     behavior_ctx: Mutex<Option<BehaviorContext<M>>>,
 }
 
@@ -31,19 +27,11 @@ impl<M> BehaviorActor<M>
 where
     M: Serialize + DeserializeOwned + Send + 'static,
 {
-    fn new(
-        name: String,
-        system: Arc<ActorSystem>,
-        behavior: Behavior<M>,
-        buffer_size: usize,
-    ) -> Self {
-        let (tx, rx) = mpsc::channel(buffer_size);
+    fn new(name: String, system: Arc<ActorSystem>, behavior: Behavior<M>) -> Self {
         Self {
             name,
             system,
             behavior: Mutex::new(behavior),
-            msg_receiver: Mutex::new(rx),
-            msg_sender: tx,
             behavior_ctx: Mutex::new(None),
         }
     }
@@ -79,9 +67,28 @@ where
                 *behavior = new_behavior;
                 Message::pack(&())
             }
-            BehaviorAction::Stop => {
-                // Signal stop - the actor system will handle cleanup
-                Err(anyhow::anyhow!("Actor stopped"))
+            BehaviorAction::Stop(reason) => {
+                // Log stop reason for observability
+                if let Some(ref r) = reason {
+                    tracing::info!(actor = %self.name, reason = %r, "Behavior actor stopping");
+                } else {
+                    tracing::info!(actor = %self.name, "Behavior actor stopping");
+                }
+
+                drop(behavior);
+                drop(ctx_guard);
+
+                // Trigger graceful stop via cancel token
+                _ctx.cancel_token().cancel();
+
+                // Return an error to signal the caller that actor has stopped
+                // This allows ask() callers to distinguish stop from normal response
+                Err(anyhow::anyhow!("Actor stopped: {}", reason.unwrap_or_default()))
+            }
+            BehaviorAction::AlreadyStopped => {
+                // Actor was already stopped, reject new messages
+                tracing::warn!(actor = %self.name, "Message received after actor stopped");
+                Err(anyhow::anyhow!("Actor already stopped"))
             }
         }
     }
@@ -99,7 +106,6 @@ where
             self.system.clone(),
             self_ref,
             ctx.cancel_token().clone(),
-            self.msg_sender.clone(),
         );
 
         let mut ctx_guard = self.behavior_ctx.lock().await;
@@ -165,7 +171,7 @@ impl BehaviorSpawner for ActorSystem {
         M: Serialize + DeserializeOwned + Send + Sync + 'static,
     {
         let name_str = name.as_ref().to_string();
-        let actor = BehaviorActor::new(name_str.clone(), self.clone(), behavior, mailbox_capacity);
+        let actor = BehaviorActor::new(name_str.clone(), self.clone(), behavior);
         let options = SpawnOptions::new().mailbox_capacity(mailbox_capacity);
         let actor_ref = self.spawn_with_options(&name_str, actor, options).await?;
 
@@ -189,7 +195,7 @@ mod tests {
     async fn test_spawn_behavior() {
         let system = Arc::new(ActorSystem::new(SystemConfig::standalone()).await.unwrap());
 
-        let counter = stateful(0i32, |count, msg| match msg {
+        let counter = stateful(0i32, |count, msg, _ctx| match msg {
             TestMsg::Ping => BehaviorAction::Same,
             TestMsg::Increment(n) => {
                 *count += n;

@@ -1,23 +1,28 @@
 //! Actor reference - location-transparent handle to an actor
 
+use super::address::ActorPath;
 use super::mailbox::Envelope;
 use super::traits::{ActorId, Message};
 use serde::{de::DeserializeOwned, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, RwLock};
 
 /// Actor reference - handle for sending messages to an actor
+///
+/// ActorRef supports two resolution modes:
+/// - **Direct**: Uses a fixed connection (for local actors or known remote actors)
+/// - **Lazy**: Re-resolves the actor on each operation (for named actors that may migrate)
 #[derive(Clone)]
 pub struct ActorRef {
-    /// The target actor's ID
+    /// The target actor's ID (may be placeholder for lazy refs)
     pub(crate) actor_id: ActorId,
 
-    /// Inner implementation (local or remote)
+    /// Inner implementation
     pub(crate) inner: ActorRefInner,
 }
 
-/// Inner actor reference - either local or remote
+/// Inner actor reference - direct or lazy resolution
 #[derive(Clone)]
 pub enum ActorRefInner {
     /// Local actor - direct channel access
@@ -25,6 +30,9 @@ pub enum ActorRefInner {
 
     /// Remote actor - via network transport
     Remote(Arc<RemoteActorRef>),
+
+    /// Lazy resolution - re-resolve on each call (for named actors)
+    Lazy(Arc<LazyActorRef>),
 }
 
 /// Remote actor reference
@@ -34,6 +42,79 @@ pub struct RemoteActorRef {
 
     /// Transport client
     pub transport: Arc<dyn RemoteTransport>,
+}
+
+/// Lazy actor reference - resolves actor path on each operation
+///
+/// This ensures the reference is always up-to-date, even if the actor
+/// migrates to a different node.
+pub struct LazyActorRef {
+    /// The named actor path (e.g., "services/echo")
+    pub path: ActorPath,
+
+    /// Resolver function
+    pub resolver: Arc<dyn ActorResolver>,
+
+    /// Cached ActorRef (with version for staleness check)
+    cache: RwLock<Option<CachedRef>>,
+}
+
+/// Cached reference with version for staleness detection
+struct CachedRef {
+    actor_ref: ActorRef,
+    /// Cache timestamp for TTL-based invalidation
+    cached_at: std::time::Instant,
+}
+
+/// Cache TTL - references older than this are re-resolved
+const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Trait for resolving actor paths to ActorRefs
+#[async_trait::async_trait]
+pub trait ActorResolver: Send + Sync {
+    /// Resolve a named actor path to an ActorRef
+    async fn resolve_path(&self, path: &ActorPath) -> anyhow::Result<ActorRef>;
+}
+
+impl LazyActorRef {
+    /// Create a new lazy actor reference
+    pub fn new(path: ActorPath, resolver: Arc<dyn ActorResolver>) -> Self {
+        Self {
+            path,
+            resolver,
+            cache: RwLock::new(None),
+        }
+    }
+
+    /// Get the underlying ActorRef, resolving if necessary
+    async fn get(&self) -> anyhow::Result<ActorRef> {
+        // Check cache first
+        {
+            let cache = self.cache.read().await;
+            if let Some(ref cached) = *cache {
+                if cached.cached_at.elapsed() < CACHE_TTL {
+                    return Ok(cached.actor_ref.clone());
+                }
+            }
+        }
+
+        // Cache miss or expired - resolve and update
+        let resolved = self.resolver.resolve_path(&self.path).await?;
+        {
+            let mut cache = self.cache.write().await;
+            *cache = Some(CachedRef {
+                actor_ref: resolved.clone(),
+                cached_at: std::time::Instant::now(),
+            });
+        }
+        Ok(resolved)
+    }
+
+    /// Invalidate the cache (call when actor is known to have moved)
+    pub async fn invalidate(&self) {
+        let mut cache = self.cache.write().await;
+        *cache = None;
+    }
 }
 
 /// Trait for remote transport (HTTP/2, TCP, etc.)
@@ -102,6 +183,18 @@ impl ActorRef {
         }
     }
 
+    /// Create a lazy actor reference that re-resolves on cache expiry
+    ///
+    /// This is useful for named actors that may migrate between nodes.
+    /// The reference will automatically re-resolve after CACHE_TTL (5 seconds).
+    pub fn lazy(path: ActorPath, resolver: Arc<dyn ActorResolver>) -> Self {
+        Self {
+            // Use a placeholder ID for lazy refs
+            actor_id: ActorId::local(0),
+            inner: ActorRefInner::Lazy(Arc::new(LazyActorRef::new(path, resolver))),
+        }
+    }
+
     /// Get the actor ID
     pub fn id(&self) -> &ActorId {
         &self.actor_id
@@ -110,6 +203,18 @@ impl ActorRef {
     /// Check if this is a local reference
     pub fn is_local(&self) -> bool {
         matches!(self.inner, ActorRefInner::Local(_))
+    }
+
+    /// Check if this is a lazy (re-resolving) reference
+    pub fn is_lazy(&self) -> bool {
+        matches!(self.inner, ActorRefInner::Lazy(_))
+    }
+
+    /// Invalidate cache for lazy references (force re-resolution on next call)
+    pub async fn invalidate_cache(&self) {
+        if let ActorRefInner::Lazy(lazy) = &self.inner {
+            lazy.invalidate().await;
+        }
     }
 
     /// Send a raw message and receive response (low-level API)
@@ -129,6 +234,26 @@ impl ActorRef {
             ActorRefInner::Remote(remote) => {
                 remote.transport.send_message(&self.actor_id, msg).await
             }
+            ActorRefInner::Lazy(lazy) => {
+                // Resolve and call the underlying send directly to avoid recursion
+                let resolved = lazy.get().await?;
+                match &resolved.inner {
+                    ActorRefInner::Local(sender) => {
+                        let (tx, rx) = oneshot::channel();
+                        sender
+                            .send(Envelope::ask(msg, tx))
+                            .await
+                            .map_err(|_| anyhow::anyhow!("Actor mailbox closed"))?;
+                        rx.await.map_err(|_| anyhow::anyhow!("Actor dropped"))?
+                    }
+                    ActorRefInner::Remote(remote) => {
+                        remote.transport.send_message(&resolved.actor_id, msg).await
+                    }
+                    ActorRefInner::Lazy(_) => {
+                        Err(anyhow::anyhow!("Nested lazy refs not supported"))
+                    }
+                }
+            }
         }
     }
 
@@ -141,6 +266,22 @@ impl ActorRef {
                 .map_err(|_| anyhow::anyhow!("Actor mailbox closed")),
             ActorRefInner::Remote(remote) => {
                 remote.transport.send_oneway(&self.actor_id, msg).await
+            }
+            ActorRefInner::Lazy(lazy) => {
+                // Resolve and call the underlying send_oneway directly to avoid recursion
+                let resolved = lazy.get().await?;
+                match &resolved.inner {
+                    ActorRefInner::Local(sender) => sender
+                        .send(Envelope::tell(msg))
+                        .await
+                        .map_err(|_| anyhow::anyhow!("Actor mailbox closed")),
+                    ActorRefInner::Remote(remote) => {
+                        remote.transport.send_oneway(&resolved.actor_id, msg).await
+                    }
+                    ActorRefInner::Lazy(_) => {
+                        Err(anyhow::anyhow!("Nested lazy refs not supported"))
+                    }
+                }
             }
         }
     }

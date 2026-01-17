@@ -21,6 +21,9 @@ pub enum NodeStatus {
     Fail = 2,
     /// Node is in handshake (new node joining)
     Handshake = 3,
+    /// Node is tombstoned (failed + grace period expired)
+    /// Named actors are cleared but node info is retained for recovery
+    Tombstone = 4,
 }
 
 impl NodeStatus {
@@ -30,6 +33,14 @@ impl NodeStatus {
 
     pub fn is_failed(&self) -> bool {
         matches!(self, Self::PFail | Self::Fail)
+    }
+
+    pub fn is_tombstoned(&self) -> bool {
+        matches!(self, Self::Tombstone)
+    }
+
+    pub fn can_recover(&self) -> bool {
+        matches!(self, Self::PFail | Self::Fail | Self::Tombstone)
     }
 }
 

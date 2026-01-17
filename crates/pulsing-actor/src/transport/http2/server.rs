@@ -571,8 +571,14 @@ fn empty_body() -> BoxBody {
 }
 
 // ============================================================================
-// Response builder helpers - eliminates unwrap() calls with proper error handling
+// Response builder helpers - panic-free with fallback to 500 Internal Server Error
 // ============================================================================
+
+/// Fallback response when response building fails (should never happen with valid inputs)
+fn fallback_500() -> Response<BoxBody> {
+    // This uses a minimal builder that cannot fail
+    Response::new(full_body(b"Internal Server Error".to_vec()))
+}
 
 /// Build a JSON response with the given status code
 fn json_response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody> {
@@ -580,7 +586,10 @@ fn json_response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody> {
         .status(status)
         .header("content-type", "application/json")
         .body(full_body(body))
-        .expect("failed to build JSON response with valid headers")
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to build JSON response: {}", e);
+            fallback_500()
+        })
 }
 
 /// Build an octet-stream response with the given status code
@@ -589,7 +598,10 @@ fn octet_response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody> {
         .status(status)
         .header("content-type", "application/octet-stream")
         .body(full_body(body))
-        .expect("failed to build octet-stream response with valid headers")
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to build octet-stream response: {}", e);
+            fallback_500()
+        })
 }
 
 /// Build an octet-stream response with custom headers
@@ -604,9 +616,10 @@ fn octet_response_with_headers(
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
-    builder
-        .body(body)
-        .expect("failed to build response with valid headers")
+    builder.body(body).unwrap_or_else(|e| {
+        tracing::error!("Failed to build response with headers: {}", e);
+        fallback_500()
+    })
 }
 
 /// Build a text response (for metrics endpoint)
@@ -615,7 +628,10 @@ fn text_response(status: StatusCode, body: Vec<u8>) -> Response<BoxBody> {
         .status(status)
         .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
         .body(full_body(body))
-        .expect("failed to build text response with valid headers")
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to build text response: {}", e);
+            fallback_500()
+        })
 }
 
 /// Build an empty response with the given status code
@@ -623,7 +639,10 @@ fn empty_response(status: StatusCode) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .body(empty_body())
-        .expect("failed to build empty response")
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to build empty response: {}", e);
+            fallback_500()
+        })
 }
 
 /// Build an error response with the given status code and message
@@ -631,7 +650,10 @@ fn error_response(status: StatusCode, message: impl Into<Vec<u8>>) -> Response<B
     Response::builder()
         .status(status)
         .body(full_body(message.into()))
-        .expect("failed to build error response")
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to build error response: {}", e);
+            fallback_500()
+        })
 }
 
 #[cfg(test)]

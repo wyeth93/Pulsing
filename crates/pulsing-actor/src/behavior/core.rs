@@ -10,8 +10,28 @@ pub enum BehaviorAction<M> {
     Same,
     /// Switch to a new behavior (state machine transition)
     Become(Behavior<M>),
-    /// Stop the actor
-    Stop,
+    /// Stop the actor gracefully with optional reason
+    Stop(Option<String>),
+    /// Actor is already stopped (internal use)
+    /// This is returned when messages arrive after Stop
+    AlreadyStopped,
+}
+
+impl<M> BehaviorAction<M> {
+    /// Create a Stop action without reason
+    pub fn stop() -> Self {
+        Self::Stop(None)
+    }
+
+    /// Create a Stop action with reason
+    pub fn stop_with_reason(reason: impl Into<String>) -> Self {
+        Self::Stop(Some(reason.into()))
+    }
+
+    /// Check if this action indicates the actor should stop
+    pub fn is_stop(&self) -> bool {
+        matches!(self, Self::Stop(_) | Self::AlreadyStopped)
+    }
 }
 
 /// The core behavior function type
@@ -73,32 +93,45 @@ where
 /// Create a stateful behavior with encapsulated state
 ///
 /// The state is owned by the behavior and can be mutated in the handler.
-/// Due to Rust's ownership rules, the handler must be a sync function that
-/// returns a BoxFuture. Use `Box::pin(async move { ... })` in the handler.
+/// The handler receives: state, message, and context.
+///
+/// After `BehaviorAction::Stop`, subsequent messages will receive `BehaviorAction::AlreadyStopped`
+/// instead of panicking.
 ///
 /// # Example
 /// ```rust,ignore
-/// let counter = stateful(0, |count: &mut i32, msg: CounterMsg, _ctx| {
-///     let result = match msg {
-///         CounterMsg::Increment(n) => {
-///             *count += n;
-///             BehaviorAction::Same
-///         }
-///         CounterMsg::Get => BehaviorAction::Same,
-///     };
-///     Box::pin(async move { result })
+/// let counter = stateful(0, |count, msg, ctx| {
+///     println!("Actor {} received message", ctx.name());
+///     *count += msg;
+///     BehaviorAction::Same
 /// });
 /// ```
 pub fn stateful<S, M, F>(initial_state: S, handler: F) -> Behavior<M>
 where
     S: Send + 'static,
     M: Send + 'static,
-    F: Fn(&mut S, M) -> BehaviorAction<M> + Send + 'static,
+    F: Fn(&mut S, M, &BehaviorContext<M>) -> BehaviorAction<M> + Send + 'static,
 {
-    let state = std::sync::Arc::new(std::sync::Mutex::new(initial_state));
-    Behavior::new(move |msg, _ctx| {
-        let mut guard = state.lock().unwrap();
-        let action = handler(&mut guard, msg);
+    // Use a Cell-like pattern: state is moved into the closure and mutated directly.
+    // This avoids both std::sync::Mutex (which blocks async runtime) and
+    // tokio::sync::Mutex (which would require async in the handler).
+    //
+    // Safety: The closure is FnMut and only called sequentially by the actor runtime,
+    // so no concurrent access is possible.
+    let mut state = Some(initial_state);
+    Behavior::new(move |msg, ctx| {
+        // If state is None, actor has already stopped
+        let Some(mut s) = state.take() else {
+            return Box::pin(async { BehaviorAction::AlreadyStopped });
+        };
+
+        let action = handler(&mut s, msg, ctx);
+
+        // Only restore state if not stopping
+        if !action.is_stop() {
+            state = Some(s);
+        }
+
         Box::pin(async move { action })
     })
 }
@@ -115,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_stateful_behavior_creation() {
-        let _behavior: Behavior<TestMsg> = stateful(0i32, |count, msg| match msg {
+        let _behavior: Behavior<TestMsg> = stateful(0i32, |count, msg, _ctx| match msg {
             TestMsg::Ping => BehaviorAction::Same,
             TestMsg::Add(n) => {
                 *count += n;
@@ -130,7 +163,7 @@ mod tests {
             Box::pin(async move {
                 match msg {
                     TestMsg::Ping => BehaviorAction::Same,
-                    TestMsg::Add(_) => BehaviorAction::Stop,
+                    TestMsg::Add(_) => BehaviorAction::stop(),
                 }
             })
         });

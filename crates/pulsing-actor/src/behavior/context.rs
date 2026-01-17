@@ -7,7 +7,6 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Context provided to behavior handlers
@@ -25,8 +24,6 @@ pub struct BehaviorContext<M> {
     self_ref: TypedRef<M>,
     /// Cancellation token for graceful shutdown
     cancel_token: CancellationToken,
-    /// Sender for scheduling messages to self
-    self_sender: mpsc::Sender<M>,
     _marker: PhantomData<M>,
 }
 
@@ -41,7 +38,6 @@ where
         system: Arc<ActorSystem>,
         self_ref: TypedRef<M>,
         cancel_token: CancellationToken,
-        self_sender: mpsc::Sender<M>,
     ) -> Self {
         Self {
             actor_name,
@@ -49,7 +45,6 @@ where
             system,
             self_ref,
             cancel_token,
-            self_sender,
             _marker: PhantomData,
         }
     }
@@ -92,11 +87,35 @@ where
     /// Schedule a message to be sent to self after a delay
     ///
     /// The message will be delivered to this actor after the specified duration.
+    /// If the actor is stopped before the delay expires, the message will not be sent.
+    ///
+    /// The message goes through the actor's normal mailbox, ensuring proper ordering.
     pub fn schedule_self(&self, msg: M, delay: Duration) {
-        let sender = self.self_sender.clone();
+        // Resolve the ActorRef upfront (ActorRef is Send + Sync)
+        let actor_ref = match self.self_ref.as_untyped() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Failed to resolve self for scheduled message: {}", e);
+                return;
+            }
+        };
+        let cancel = self.cancel_token.clone();
+
         tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            let _ = sender.send(msg).await;
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {
+                    // Only send if actor is still running
+                    if !cancel.is_cancelled() {
+                        if let Err(e) = actor_ref.tell(msg).await {
+                            tracing::warn!("Failed to deliver scheduled message: {}", e);
+                        }
+                    }
+                }
+                _ = cancel.cancelled() => {
+                    // Actor stopped, don't send the message
+                    tracing::debug!("Scheduled message cancelled due to actor stop");
+                }
+            }
         });
     }
 

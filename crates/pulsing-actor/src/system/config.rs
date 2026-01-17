@@ -104,14 +104,23 @@ impl SystemConfig {
 /// // Cluster mode with seeds
 /// let system = ActorSystem::builder()
 ///     .addr("0.0.0.0:8000")
-///     .seeds(&["192.168.1.1:8000", "192.168.1.2:8000"])
+///     .seeds(["192.168.1.1:8000", "192.168.1.2:8000"])
 ///     .mailbox_capacity(512)
 ///     .build()
 ///     .await?;
 /// ```
 #[derive(Default)]
 pub struct ActorSystemBuilder {
-    config: SystemConfig,
+    /// Bind address (stored as Result for deferred error handling)
+    addr: Option<Result<SocketAddr, String>>,
+    /// Seed nodes (stored as Results for deferred error handling)
+    seeds: Vec<Result<SocketAddr, String>>,
+    /// Mailbox capacity
+    mailbox_capacity: Option<usize>,
+    /// Gossip configuration
+    gossip_config: Option<GossipConfig>,
+    /// HTTP/2 configuration
+    http2_config: Option<Http2Config>,
 }
 
 impl ActorSystemBuilder {
@@ -122,69 +131,110 @@ impl ActorSystemBuilder {
 
     /// Set the bind address
     ///
-    /// Accepts `&str` or `SocketAddr`
+    /// Accepts `&str`, `String`, or `SocketAddr`.
+    /// Address parsing errors are deferred to `build()`.
     pub fn addr(mut self, addr: impl Into<AddrInput>) -> Self {
-        self.config.addr = addr.into().0;
+        self.addr = Some(addr.into().0);
         self
     }
 
     /// Add seed nodes for cluster joining
     ///
-    /// Accepts `&[&str]` or `Vec<SocketAddr>`
+    /// Accepts `[&str]`, `Vec<String>`, or `Vec<SocketAddr>`.
+    /// Address parsing errors are deferred to `build()`.
     pub fn seeds(mut self, seeds: impl IntoIterator<Item = impl Into<AddrInput>>) -> Self {
-        self.config.seed_nodes = seeds.into_iter().map(|s| s.into().0).collect();
+        self.seeds = seeds.into_iter().map(|s| s.into().0).collect();
         self
     }
 
     /// Set default mailbox capacity for actors
     pub fn mailbox_capacity(mut self, capacity: usize) -> Self {
-        self.config.default_mailbox_capacity = capacity;
+        self.mailbox_capacity = Some(capacity);
         self
     }
 
     /// Enable TLS with passphrase
     #[cfg(feature = "tls")]
     pub fn tls(mut self, passphrase: &str) -> anyhow::Result<Self> {
-        self.config.http2_config = self.config.http2_config.with_tls(passphrase)?;
+        let http2_config = self
+            .http2_config
+            .take()
+            .unwrap_or_default()
+            .with_tls(passphrase)?;
+        self.http2_config = Some(http2_config);
         Ok(self)
     }
 
     /// Set gossip configuration
     pub fn gossip(mut self, config: GossipConfig) -> Self {
-        self.config.gossip_config = config;
+        self.gossip_config = Some(config);
         self
     }
 
     /// Build the ActorSystem
+    ///
+    /// Returns an error if any address parsing failed.
     pub async fn build(self) -> anyhow::Result<Arc<crate::system::ActorSystem>> {
-        crate::system::ActorSystem::new(self.config).await
+        // Parse bind address (use default if not specified)
+        let addr = match self.addr {
+            Some(Ok(addr)) => addr,
+            Some(Err(invalid)) => {
+                return Err(anyhow::anyhow!("Invalid bind address: {}", invalid));
+            }
+            None => "0.0.0.0:0".parse().unwrap(),
+        };
+
+        // Parse seed nodes
+        let mut seed_nodes = Vec::with_capacity(self.seeds.len());
+        for (i, seed) in self.seeds.into_iter().enumerate() {
+            match seed {
+                Ok(addr) => seed_nodes.push(addr),
+                Err(invalid) => {
+                    return Err(anyhow::anyhow!(
+                        "Invalid seed address at index {}: {}",
+                        i,
+                        invalid
+                    ));
+                }
+            }
+        }
+
+        let config = SystemConfig {
+            addr,
+            seed_nodes,
+            gossip_config: self.gossip_config.unwrap_or_default(),
+            http2_config: self.http2_config.unwrap_or_default(),
+            default_mailbox_capacity: self.mailbox_capacity.unwrap_or(DEFAULT_MAILBOX_SIZE),
+        };
+
+        crate::system::ActorSystem::new(config).await
     }
 }
 
-/// Helper type for flexible address input
-pub struct AddrInput(SocketAddr);
+/// Helper type for flexible address input (defers parsing errors)
+pub struct AddrInput(Result<SocketAddr, String>);
 
 impl From<SocketAddr> for AddrInput {
     fn from(addr: SocketAddr) -> Self {
-        AddrInput(addr)
+        AddrInput(Ok(addr))
     }
 }
 
 impl From<&str> for AddrInput {
     fn from(s: &str) -> Self {
-        AddrInput(s.parse().expect("invalid address format"))
+        AddrInput(s.parse().map_err(|_| s.to_string()))
     }
 }
 
 impl From<String> for AddrInput {
     fn from(s: String) -> Self {
-        AddrInput(s.parse().expect("invalid address format"))
+        AddrInput(s.parse().map_err(|_| s.clone()))
     }
 }
 
 impl From<&&str> for AddrInput {
     fn from(s: &&str) -> Self {
-        AddrInput(s.parse().expect("invalid address format"))
+        AddrInput(s.parse().map_err(|_| s.to_string()))
     }
 }
 
