@@ -28,10 +28,14 @@ pub struct SystemConfig {
     pub default_mailbox_capacity: usize,
 }
 
+/// Default bind address for standalone mode (any interface, OS-assigned port)
+const DEFAULT_BIND_ADDR: std::net::SocketAddr =
+    std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), 0);
+
 impl Default for SystemConfig {
     fn default() -> Self {
         Self {
-            addr: "0.0.0.0:0".parse().unwrap(),
+            addr: DEFAULT_BIND_ADDR,
             seed_nodes: Vec::new(),
             gossip_config: GossipConfig::default(),
             http2_config: Http2Config::default(),
@@ -181,7 +185,7 @@ impl ActorSystemBuilder {
             Some(Err(invalid)) => {
                 return Err(anyhow::anyhow!("Invalid bind address: {}", invalid));
             }
-            None => "0.0.0.0:0".parse().unwrap(),
+            None => DEFAULT_BIND_ADDR,
         };
 
         // Parse seed nodes

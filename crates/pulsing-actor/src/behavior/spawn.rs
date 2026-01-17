@@ -83,7 +83,10 @@ where
 
                 // Return an error to signal the caller that actor has stopped
                 // This allows ask() callers to distinguish stop from normal response
-                Err(anyhow::anyhow!("Actor stopped: {}", reason.unwrap_or_default()))
+                Err(anyhow::anyhow!(
+                    "Actor stopped: {}",
+                    reason.unwrap_or_default()
+                ))
             }
             BehaviorAction::AlreadyStopped => {
                 // Actor was already stopped, reject new messages

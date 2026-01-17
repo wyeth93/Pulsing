@@ -116,8 +116,13 @@ impl ActorPath {
     }
 
     /// Get the name (last segment)
+    ///
+    /// # Safety
+    /// This will never panic because ActorPath::new() ensures at least 2 segments exist.
     pub fn name(&self) -> &str {
-        self.segments.last().unwrap()
+        // SAFETY: ActorPath invariant guarantees segments.len() >= 2
+        // This is enforced in ActorPath::new() which is the only way to construct an ActorPath
+        &self.segments[self.segments.len() - 1]
     }
 
     /// Get all segments

@@ -125,8 +125,12 @@ impl Http2Transport {
         let client = Arc::new(Http2Client::new(config.clone()));
         client.start_background_tasks();
 
+        // Default address for client-only mode (no server binding)
+        const CLIENT_ONLY_ADDR: SocketAddr =
+            SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)), 0);
+
         Arc::new(Self {
-            local_addr: "0.0.0.0:0".parse().unwrap(),
+            local_addr: CLIENT_ONLY_ADDR,
             client,
             // server: None,
             // config,

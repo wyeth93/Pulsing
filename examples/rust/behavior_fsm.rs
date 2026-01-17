@@ -26,11 +26,20 @@ fn red(stats: Stats) -> Behavior<Signal> {
     stateful(stats, |stats, msg, ctx| match msg {
         Signal::Next => {
             stats.transitions += 1;
-            println!("[{}] 🔴 Red -> 🟢 Green (transition #{})", ctx.name(), stats.transitions);
+            println!(
+                "[{}] 🔴 Red -> 🟢 Green (transition #{})",
+                ctx.name(),
+                stats.transitions
+            );
             BehaviorAction::Become(green(stats.clone()))
         }
         Signal::Query => {
-            println!("[{}] Current: 🔴 Red | cycles: {}, transitions: {}", ctx.name(), stats.cycles, stats.transitions);
+            println!(
+                "[{}] Current: 🔴 Red | cycles: {}, transitions: {}",
+                ctx.name(),
+                stats.cycles,
+                stats.transitions
+            );
             BehaviorAction::Same
         }
     })
@@ -40,11 +49,20 @@ fn green(stats: Stats) -> Behavior<Signal> {
     stateful(stats, |stats, msg, ctx| match msg {
         Signal::Next => {
             stats.transitions += 1;
-            println!("[{}] 🟢 Green -> 🟡 Yellow (transition #{})", ctx.name(), stats.transitions);
+            println!(
+                "[{}] 🟢 Green -> 🟡 Yellow (transition #{})",
+                ctx.name(),
+                stats.transitions
+            );
             BehaviorAction::Become(yellow(stats.clone()))
         }
         Signal::Query => {
-            println!("[{}] Current: 🟢 Green | cycles: {}, transitions: {}", ctx.name(), stats.cycles, stats.transitions);
+            println!(
+                "[{}] Current: 🟢 Green | cycles: {}, transitions: {}",
+                ctx.name(),
+                stats.cycles,
+                stats.transitions
+            );
             BehaviorAction::Same
         }
     })
@@ -55,11 +73,21 @@ fn yellow(stats: Stats) -> Behavior<Signal> {
         Signal::Next => {
             stats.transitions += 1;
             stats.cycles += 1; // Complete one cycle
-            println!("[{}] 🟡 Yellow -> 🔴 Red (transition #{}, cycle #{})", ctx.name(), stats.transitions, stats.cycles);
+            println!(
+                "[{}] 🟡 Yellow -> 🔴 Red (transition #{}, cycle #{})",
+                ctx.name(),
+                stats.transitions,
+                stats.cycles
+            );
             BehaviorAction::Become(red(stats.clone()))
         }
         Signal::Query => {
-            println!("[{}] Current: 🟡 Yellow | cycles: {}, transitions: {}", ctx.name(), stats.cycles, stats.transitions);
+            println!(
+                "[{}] Current: 🟡 Yellow | cycles: {}, transitions: {}",
+                ctx.name(),
+                stats.cycles,
+                stats.transitions
+            );
             BehaviorAction::Same
         }
     })
@@ -70,9 +98,12 @@ async fn main() -> anyhow::Result<()> {
     println!("=== Traffic Light State Machine ===\n");
 
     let system = ActorSystem::builder().build().await?;
-    
+
     // Start with initial stats
-    let initial_stats = Stats { cycles: 0, transitions: 0 };
+    let initial_stats = Stats {
+        cycles: 0,
+        transitions: 0,
+    };
     let light = system.spawn_behavior("light", red(initial_stats)).await?;
 
     // Run through 2 complete cycles

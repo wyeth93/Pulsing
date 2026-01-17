@@ -15,8 +15,8 @@ pub use config::{ActorSystemBuilder, ResolveOptions, SpawnOptions, SystemConfig}
 pub use handle::ActorStats;
 
 use crate::actor::{
-    Actor, ActorAddress, ActorContext, ActorId, ActorPath, ActorRef, ActorResolver,
-    ActorSystemRef, IntoActorPath, Mailbox, NodeId, StopReason,
+    Actor, ActorAddress, ActorContext, ActorId, ActorPath, ActorRef, ActorResolver, ActorSystemRef,
+    IntoActorPath, Mailbox, NodeId, StopReason,
 };
 use crate::cluster::{GossipCluster, MemberInfo, MemberStatus, NamedActorInfo};
 use crate::policies::{LoadBalancingPolicy, RoundRobinPolicy, Worker};

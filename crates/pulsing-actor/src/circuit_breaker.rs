@@ -37,9 +37,37 @@
 //! ```
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use tracing::info;
+
+/// Helper trait for handling poisoned locks gracefully
+trait UnwrapOrRecover<T> {
+    /// Get the inner value, recovering from poison if necessary
+    fn unwrap_or_recover(self) -> T;
+}
+
+impl<'a, T> UnwrapOrRecover<RwLockReadGuard<'a, T>>
+    for Result<RwLockReadGuard<'a, T>, PoisonError<RwLockReadGuard<'a, T>>>
+{
+    fn unwrap_or_recover(self) -> RwLockReadGuard<'a, T> {
+        self.unwrap_or_else(|e| {
+            tracing::warn!("Recovering from poisoned read lock");
+            e.into_inner()
+        })
+    }
+}
+
+impl<'a, T> UnwrapOrRecover<RwLockWriteGuard<'a, T>>
+    for Result<RwLockWriteGuard<'a, T>, PoisonError<RwLockWriteGuard<'a, T>>>
+{
+    fn unwrap_or_recover(self) -> RwLockWriteGuard<'a, T> {
+        self.unwrap_or_else(|e| {
+            tracing::warn!("Recovering from poisoned write lock");
+            e.into_inner()
+        })
+    }
+}
 
 /// Circuit breaker configuration
 #[derive(Debug, Clone)]
@@ -125,7 +153,7 @@ impl CircuitBreaker {
         // First check if we need to transition from Open to HalfOpen
         self.check_and_update_state();
 
-        let state = *self.state.read().unwrap();
+        let state = *self.state.read().unwrap_or_recover();
         match state {
             CircuitState::Closed => true,
             CircuitState::Open => false,
@@ -136,7 +164,7 @@ impl CircuitBreaker {
     /// Get the current state
     pub fn state(&self) -> CircuitState {
         self.check_and_update_state();
-        *self.state.read().unwrap()
+        *self.state.read().unwrap_or_recover()
     }
 
     /// Record the outcome of a request
@@ -154,7 +182,7 @@ impl CircuitBreaker {
         self.consecutive_failures.store(0, Ordering::Release);
         let successes = self.consecutive_successes.fetch_add(1, Ordering::AcqRel) + 1;
 
-        let current_state = *self.state.read().unwrap();
+        let current_state = *self.state.read().unwrap_or_recover();
 
         match current_state {
             CircuitState::HalfOpen => {
@@ -181,11 +209,11 @@ impl CircuitBreaker {
 
         // Update last failure time
         {
-            let mut last_failure = self.last_failure_time.write().unwrap();
+            let mut last_failure = self.last_failure_time.write().unwrap_or_recover();
             *last_failure = Some(Instant::now());
         }
 
-        let current_state = *self.state.read().unwrap();
+        let current_state = *self.state.read().unwrap_or_recover();
 
         match current_state {
             CircuitState::Closed => {
@@ -206,11 +234,11 @@ impl CircuitBreaker {
 
     /// Check and update state based on timeout
     fn check_and_update_state(&self) {
-        let current_state = *self.state.read().unwrap();
+        let current_state = *self.state.read().unwrap_or_recover();
 
         if current_state == CircuitState::Open {
             // Check if timeout has expired
-            let last_change = *self.last_state_change.read().unwrap();
+            let last_change = *self.last_state_change.read().unwrap_or_recover();
             if last_change.elapsed() >= self.config.timeout_duration {
                 self.transition_to(CircuitState::HalfOpen);
             }
@@ -219,14 +247,14 @@ impl CircuitBreaker {
 
     /// Transition to a new state
     fn transition_to(&self, new_state: CircuitState) {
-        let mut state = self.state.write().unwrap();
+        let mut state = self.state.write().unwrap_or_recover();
         let old_state = *state;
 
         if old_state != new_state {
             *state = new_state;
 
             // Update last state change time
-            let mut last_change = self.last_state_change.write().unwrap();
+            let mut last_change = self.last_state_change.write().unwrap_or_recover();
             *last_change = Instant::now();
 
             // Reset counters based on transition
@@ -280,12 +308,15 @@ impl CircuitBreaker {
 
     /// Get time since last failure
     pub fn time_since_last_failure(&self) -> Option<Duration> {
-        self.last_failure_time.read().unwrap().map(|t| t.elapsed())
+        self.last_failure_time
+            .read()
+            .unwrap_or_recover()
+            .map(|t| t.elapsed())
     }
 
     /// Get time since last state change
     pub fn time_since_last_state_change(&self) -> Duration {
-        self.last_state_change.read().unwrap().elapsed()
+        self.last_state_change.read().unwrap_or_recover().elapsed()
     }
 
     /// Check if the circuit is in a half-open state
