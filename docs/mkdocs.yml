@@ -96,6 +96,7 @@ plugins:
             Semantics: 语义与保证
             Agent: Agent 框架
             Overview: 概述
+            Pulsing Native: Pulsing 原生
             AutoGen: AutoGen
             LangGraph: LangGraph
             Examples: 示例
@@ -104,6 +105,7 @@ plugins:
             Design: 设计文档
             Architecture: 架构概览
             Actor System: Actor 系统
+            Behavior API: Behavior API
             Node Discovery: 节点发现
             Actor Addressing: Actor 寻址
             HTTP2 Transport: HTTP2 传输
@@ -138,6 +140,7 @@ nav:
     - Semantics: guide/semantics.md
   - Agent:
     - agent/index.md
+    - Pulsing Native: agent/native.md
     - AutoGen: agent/autogen.md
     - LangGraph: agent/langgraph.md
   - Examples:
@@ -147,6 +150,7 @@ nav:
   - Design:
     - Architecture: design/architecture.md
     - Actor System: design/actor-system.md
+    - Behavior API: design/behavior.md
     - Node Discovery: design/node-discovery.md
     - Actor Addressing: design/actor-addressing.md
     - HTTP2 Transport: design/http2-transport.md

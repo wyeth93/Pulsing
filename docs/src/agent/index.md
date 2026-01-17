@@ -10,12 +10,44 @@ Pulsing provides native support for popular agent frameworks, enabling seamless 
 - APIs remain fully compatible with original frameworks
 - One line of code to enable distributed execution
 
-## Supported Frameworks
+## Options
 
-| Framework | Integration | Description |
-|-----------|-------------|-------------|
+| Option | Integration | Description |
+|--------|-------------|-------------|
+| [**Pulsing Native**](native.md) | `@agent` | Lightweight toolkit with metadata support |
 | [AutoGen](autogen.md) | `PulsingRuntime` | Drop-in replacement for default runtime |
 | [LangGraph](langgraph.md) | `with_pulsing()` | Wrap compiled graphs |
+
+## Pulsing Native Agent
+
+For building multi-agent applications from scratch, use Pulsing's native `@agent` decorator:
+
+```python
+from pulsing.actor import resolve
+from pulsing.agent import agent, runtime, llm, list_agents
+
+@agent(role="Researcher", goal="Deep analysis")
+class Researcher:
+    async def analyze(self, topic: str) -> str:
+        client = await llm()
+        return await client.ainvoke(f"Analyze: {topic}")
+
+async with runtime():
+    r = await Researcher.spawn(name="researcher")
+    result = await r.analyze("AI trends")
+    
+    # Access metadata for visualization
+    for name, meta in list_agents().items():
+        print(f"{name}: {meta.role}")
+```
+
+**Key features:**
+
+- `@agent` = `@remote` + metadata (no magic)
+- Metadata for visualization/debugging
+- Full control over LLM calls
+
+→ [Learn more about Pulsing Native Agent](native.md)
 
 ## Architecture
 

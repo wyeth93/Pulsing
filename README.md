@@ -5,192 +5,220 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 
-Pulsing 是一个轻量级分布式 Actor 框架，专为 LLM 推理服务设计。基于 Rust 和 Tokio 构建，提供高性能的异步 Actor 模型，支持集群通信和服务发现。
+**[中文文档](README.zh.md)**
 
-## 特性
+**Lightweight distributed framework designed for high-performance AI applications.**
 
-- **零外部依赖**：基于 Tokio 的纯 Rust 实现，无需 NATS/etcd 等外部服务
-- **Gossip 协议发现**：内置 SWIM 协议实现节点发现和故障检测
-- **位置透明**：ActorRef 支持本地和远程 Actor 的统一访问
-- **流式消息**：原生支持流式请求和响应
-- **Agent 框架支持**：原生集成 AutoGen 和 LangGraph，轻松实现分布式 Agent
-- **Python 绑定**：通过 PyO3 提供完整的 Python API
+Zero external dependencies, one line of code for distributed deployment — seamlessly scale your AI applications from a single machine to a cluster.
 
-## 快速上手
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Your AI Application                     │
+│            Multi-Agent / LLM Serving / RAG Pipeline          │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                    Pulsing Actor System
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+    ┌──────────┐        ┌──────────┐        ┌──────────┐
+    │  Node 1  │◄──────►│  Node 2  │◄──────►│  Node 3  │
+    │   GPU    │        │   CPU    │        │   CPU    │
+    └──────────┘        └──────────┘        └──────────┘
+```
 
-### 安装
+## 🚀 Get Started in 5 Minutes
+
+### Installation
 
 ```bash
 pip install pulsing
 ```
 
-### 30秒入门
+### Your First Multi-Agent Application
 
 ```python
 import asyncio
-from pulsing.actor import Actor, SystemConfig, create_actor_system
+from pulsing.actor import remote, resolve
+from pulsing.agent import runtime
 
-
-class PingPong(Actor):
-    async def receive(self, msg):
-        if msg == "ping":
-            return "pong"
-        return f"echo: {msg}"
-
+@remote
+class Greeter:
+    def __init__(self, display_name: str):
+        self.display_name = display_name
+    
+    def greet(self, message: str) -> str:
+        return f"[{self.display_name}] Received: {message}"
+    
+    async def chat_with(self, peer_name: str, message: str) -> str:
+        peer = await resolve(peer_name)
+        return await peer.greet(f"From {self.display_name}: {message}")
 
 async def main():
-    system = await create_actor_system(SystemConfig.standalone())
-    actor = await system.spawn("pingpong", PingPong())
-
-    print(await actor.ask("ping"))   # -> pong
-    print(await actor.ask("hello"))  # -> echo: hello
-
-    await system.shutdown()
-
+    async with runtime():
+        # Create two agents
+        alice = await Greeter.spawn(display_name="Alice", name="alice")
+        bob = await Greeter.spawn(display_name="Bob", name="bob")
+        
+        # Agent communication
+        reply = await alice.chat_with("bob", "Hello!")
+        print(reply)  # [Bob] Received: From Alice: Hello!
 
 asyncio.run(main())
 ```
 
-**任意 Python 对象**都可以作为消息：字符串、字典、列表、自定义类等。
+**That's it!** `@remote` turns a regular class into a distributed Actor, and `resolve()` enables agents to discover and communicate with each other.
 
-### 有状态 Actor
+## 💡 I want to...
 
-```python
-class Counter(Actor):
-    def __init__(self):
-        self.value = 0
+| Scenario | Example | Description |
+|----------|---------|-------------|
+| **Quick start** | `examples/quickstart/` | Get started in 10 lines |
+| **Multi-Agent collaboration** | `examples/agent/pulsing/` | AI debate, brainstorming, role-playing |
+| **Distributed LLM inference** | `pulsing actor router/vllm` | GPU cluster inference service |
+| **Integrate AutoGen** | `examples/agent/autogen/` | One line to go distributed |
+| **Integrate LangGraph** | `examples/agent/langgraph/` | Execute graphs across nodes |
 
-    async def receive(self, msg):
-        if msg == "inc":
-            self.value += 1
-            return self.value
-        if isinstance(msg, dict) and msg.get("op") == "add":
-            self.value += msg.get("n", 0)
-            return {"value": self.value}
-```
+## 🎯 Core Capabilities
 
-### 集群通信
+### 1. Multi-Agent Collaboration
+
+Multiple AI Agents working in parallel and communicating:
 
 ```python
-# Node 1 - 启动 seed 节点
-config = SystemConfig.with_addr("0.0.0.0:8000")
-system = await create_actor_system(config)
-await system.spawn("worker", WorkerActor(), public=True)
+from pulsing.agent import agent, runtime, llm
 
-# Node 2 - 加入集群
-config = SystemConfig.with_addr("0.0.0.0:8001").with_seeds(["192.168.1.1:8000"])
-system = await create_actor_system(config)
+@agent(role="Researcher", goal="Deep analysis")
+class Researcher:
+    async def analyze(self, topic: str) -> str:
+        client = await llm()
+        return await client.ainvoke(f"Analyze: {topic}")
 
-# 查找并调用远程 Actor（API 完全相同！）
-worker = await system.resolve_named("worker")
-result = await worker.ask("do_work")
+@agent(role="Reviewer", goal="Evaluate proposals")  
+class Reviewer:
+    async def review(self, proposal: str) -> str:
+        client = await llm()
+        return await client.ainvoke(f"Review: {proposal}")
+
+async with runtime():
+    researcher = await Researcher.spawn(name="researcher")
+    reviewer = await Reviewer.spawn(name="reviewer")
+    
+    # Parallel work and collaboration
+    analysis = await researcher.analyze("AI trends")
+    feedback = await reviewer.review(analysis)
 ```
-
-## Agent 框架集成
-
-Pulsing 原生支持主流 Agent 框架，**不替代，而是增强**——用户代码几乎无需改动。
-
-### AutoGen
-
-`PulsingRuntime` 替代 AutoGen 默认运行时，实现分布式 Agent：
-
-```python
-from pulsing.autogen import PulsingRuntime
-
-runtime = PulsingRuntime(addr="0.0.0.0:8000")  # 分布式模式
-await runtime.start()
-await runtime.register_factory("agent", lambda: MyAgent())
-await runtime.send_message("Hello", AgentId("agent", "default"))
-```
-
-### LangGraph
-
-`with_pulsing()` 一行代码实现分布式：
-
-```python
-from pulsing.langgraph import with_pulsing
-
-app = graph.compile()
-distributed_app = with_pulsing(
-    app,
-    node_mapping={"llm": "langgraph_node_llm"},  # LLM → GPU 服务器
-    seeds=["gpu-server:8001"],
-)
-await distributed_app.ainvoke(inputs)
-```
-
-### 运行示例
 
 ```bash
-# AutoGen 分布式示例
-cd examples/agent/autogen && ./run_distributed.sh
+# Run MBTI personality discussion example
+python examples/agent/pulsing/mbti_discussion.py --mock --group-size 6
 
-# LangGraph 分布式示例
-cd examples/agent/langgraph && ./run_distributed.sh
+# Run parallel idea generation example
+python examples/agent/pulsing/parallel_ideas_async.py --mock --n-ideas 5
 ```
 
-## CLI 命令
+### 2. One Line to Distributed
 
-Pulsing 提供基于 Actor System 的 LLM 推理服务：
+Develop locally, scale seamlessly to clusters:
+
+```python
+# Standalone mode (development)
+async with runtime():
+    agent = await MyAgent.spawn(name="agent")
+
+# Distributed mode (production) — just add address
+async with runtime(addr="0.0.0.0:8001"):
+    agent = await MyAgent.spawn(name="agent")
+
+# Other nodes auto-discover
+async with runtime(addr="0.0.0.0:8002", seeds=["node1:8001"]):
+    agent = await resolve("agent")  # Cross-node transparent call
+```
+
+### 3. LLM Inference Service
+
+Out-of-the-box GPU cluster inference:
 
 ```bash
-# 启动 Router (OpenAI 兼容 API)
+# Start Router (OpenAI-compatible API)
 pulsing actor router --addr 0.0.0.0:8000 --http_port 8080 --model_name my-llm
 
-# 启动 vLLM Worker
+# Start vLLM Worker (can have multiple)
 pulsing actor vllm --model Qwen/Qwen2.5-0.5B --addr 0.0.0.0:8002 --seeds 127.0.0.1:8000
 
-# 运行基准测试
-pulsing bench --tokenizer_name gpt2 --url http://localhost:8080
+# Test
+curl http://localhost:8080/v1/chat/completions \
+  -d '{"model": "my-llm", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-### 测试推理服务
+### 4. Agent Framework Integration
 
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "my-llm", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
+Have existing AutoGen/LangGraph code? One-line migration:
+
+```python
+# AutoGen: Replace runtime
+from pulsing.autogen import PulsingRuntime
+runtime = PulsingRuntime(addr="0.0.0.0:8000")
+
+# LangGraph: Wrap the graph
+from pulsing.langgraph import with_pulsing
+distributed_app = with_pulsing(app, seeds=["gpu-server:8001"])
 ```
 
-## 项目结构
+## 📚 Example Guide
+
+```
+examples/
+├── quickstart/              # ⭐ 5-minute quickstart
+│   └── hello_agent.py       #    First Agent
+├── agent/
+│   ├── pulsing/             # ⭐⭐ Multi-Agent apps
+│   │   ├── mbti_discussion.py      # MBTI personality discussion
+│   │   └── parallel_ideas_async.py # Parallel idea generation
+│   ├── autogen/             # AutoGen integration
+│   └── langgraph/           # LangGraph integration
+├── python/                  # ⭐⭐ Basic examples
+│   ├── ping_pong.py         #    Actor basics
+│   ├── cluster.py           #    Cluster communication
+│   └── ...
+└── rust/                    # Rust examples
+```
+
+## 🔧 Technical Features
+
+- **Zero external dependencies**: Pure Rust + Tokio, no NATS/etcd/Redis needed
+- **Gossip protocol**: Built-in SWIM protocol for node discovery and failure detection
+- **Location transparency**: Same API for local and remote Actors
+- **Streaming messages**: Native support for streaming requests/responses (LLM-ready)
+- **Type safety**: Rust Behavior API provides compile-time message type checking
+
+## 📦 Project Structure
 
 ```
 Pulsing/
-├── crates/                   # Rust crates
-│   ├── pulsing-actor/        # Actor System 核心库
-│   ├── pulsing-bench/        # 性能基准测试工具
-│   └── pulsing-py/           # PyO3 核心绑定
-├── python/pulsing/           # Python 包
-│   ├── actor/                # Actor System Python API
-│   ├── actors/               # LLM serving actors
-│   ├── autogen/              # AutoGen 集成 (PulsingRuntime)
-│   ├── langgraph/            # LangGraph 集成 (with_pulsing)
-│   └── cli/                  # 命令行工具
-├── examples/
-│   ├── agent/                # Agent 框架示例
-│   │   ├── autogen/          # AutoGen 分布式示例
-│   │   └── langgraph/        # LangGraph 分布式示例
-│   └── python/               # 基础示例
-└── docs/                     # 文档
+├── crates/                   # Rust core
+│   ├── pulsing-actor/        #   Actor System
+│   └── pulsing-py/           #   Python bindings
+├── python/pulsing/           # Python package
+│   ├── actor/                #   Actor API
+│   ├── agent/                #   Agent toolkit
+│   ├── autogen/              #   AutoGen integration
+│   └── langgraph/            #   LangGraph integration
+├── examples/                 # Example code
+└── docs/                     # Documentation
 ```
 
-## 构建
+## 🛠️ Development
 
 ```bash
-# 开发构建
+# Development build
 maturin develop
 
-# 发布构建
-maturin build --release
-```
-
-## 运行测试
-
-```bash
+# Run tests
 pytest tests/python/
 cargo test --workspace
 ```
 
-## 许可证
+## 📄 License
 
 Apache-2.0
