@@ -10,9 +10,13 @@
 **轻量级分布式框架，专为高性能 AI 应用设计。**
 
 🚀 **零外部依赖** — 纯 Rust + Tokio，无需 NATS/etcd/Redis
+
 🌐 **自动发现** — 内置 Gossip 协议管理集群
+
 🔀 **位置透明** — 本地和远程 Actor 使用相同 API
+
 ⚡ **流式支持** — 原生支持 LLM 流式响应
+
 🤖 **Agent 友好** — 开箱即用集成 AutoGen、LangGraph
 
 ## 🚀 5分钟快速体验
@@ -27,10 +31,10 @@ pip install pulsing
 
 ```python
 import asyncio
-from pulsing.actor import remote, resolve
+import pulsing as pul
 from pulsing.agent import runtime
 
-@remote
+@pul.remote
 class Greeter:
     def __init__(self, display_name: str):
         self.display_name = display_name
@@ -39,7 +43,8 @@ class Greeter:
         return f"[{self.display_name}] 收到: {message}"
 
     async def chat_with(self, peer_name: str, message: str) -> str:
-        peer = await resolve(peer_name)
+        # 使用 Greeter.resolve() 获取有类型的代理
+        peer = await Greeter.resolve(peer_name)
         return await peer.greet(f"来自 {self.display_name}: {message}")
 
 async def main():
@@ -55,7 +60,7 @@ async def main():
 asyncio.run(main())
 ```
 
-**就这么简单！** `@remote` 让普通类变成可分布式部署的 Actor，`resolve()` 让 Agent 互相发现和通信。
+**就这么简单！** `@pul.remote` 让普通类变成可分布式部署的 Actor，`Greeter.resolve()` 让 Agent 互相发现和通信。
 
 ## 💡 我想做...
 
@@ -129,10 +134,10 @@ async with runtime(addr="0.0.0.0:8002", seeds=["node1:8001"]):
 
 ```bash
 # 启动 Router（OpenAI 兼容 API）
-pulsing actor router --addr 0.0.0.0:8000 --http_port 8080 --model_name my-llm
+pulsing actor pulsing.actors.Router --addr 0.0.0.0:8000 --http_port 8080 --model_name my-llm
 
 # 启动 vLLM Worker（可多个）
-pulsing actor vllm --model Qwen/Qwen2.5-0.5B --addr 0.0.0.0:8002 --seeds 127.0.0.1:8000
+pulsing actor pulsing.actors.VllmWorker --model Qwen/Qwen2.5-0.5B --addr 0.0.0.0:8002 --seeds 127.0.0.1:8000
 
 # 测试
 curl http://localhost:8080/v1/chat/completions \
