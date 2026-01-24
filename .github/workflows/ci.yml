@@ -11,15 +11,42 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Rust 检查和测试
-  rust:
-    name: Rust ${{ matrix.rust }} on ${{ matrix.os }}
+  # ============================================
+  # 代码规范检查（快速反馈）
+  # ============================================
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          rust-toolchain: stable
+          python-version: '3.12'
+          install-cargo-tools: 'false'
+          install-python-deps: 'true'
+
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Rust clippy
+        run: cargo clippy --workspace --exclude pulsing-py --exclude pulsing-bench-py --all-targets -- -D warnings
+
+      - name: Python lint (ruff)
+        run: ruff check python/
+
+  # ============================================
+  # Rust 构建和测试（多平台）
+  # ============================================
+  rust-test:
+    name: Rust Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        rust: [stable]
 
     steps:
       - uses: actions/checkout@v4
@@ -27,17 +54,11 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          rust-toolchain: ${{ matrix.rust }}
+          rust-toolchain: stable
           install-cargo-tools: 'false'
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --exclude pulsing-py --exclude pulsing-bench-py --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --workspace --exclude pulsing-py --exclude pulsing-bench-py --all-targets
@@ -45,7 +66,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --exclude pulsing-py --exclude pulsing-bench-py --all-targets
 
-  # Rust 测试 + 覆盖率收集 (仅 Linux)
+  # ============================================
+  # Rust 覆盖率收集
+  # ============================================
   rust-coverage:
     name: Rust Coverage
     runs-on: ubuntu-latest
@@ -61,7 +84,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
-      - name: Run Rust tests and collect coverage
+      - name: Run tests and collect coverage
         shell: bash
         run: |
           source <(cargo llvm-cov show-env --export-prefix)
@@ -71,146 +94,26 @@ jobs:
           cargo nextest run --workspace --exclude pulsing-py --exclude pulsing-bench-py
           cargo llvm-cov --no-run --lcov --output-path coverage.lcov
 
-      - name: Upload Rust coverage report
+      - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
           name: rust-coverage
           path: coverage.lcov
           retention-days: 30
 
-  # Python 检查和测试
-  python:
-    name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-
+  # ============================================
+  # 构建 macOS Wheel
+  # ============================================
+  build-macos:
+    name: Build Wheel (macOS)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          python-version: ${{ matrix.python-version }}
-          install-python-deps: 'true'
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Python package
-        run: maturin develop
-
-      - name: Lint with ruff
-        run: ruff check python/
-
-      - name: Test with pytest
-        run: pytest tests/python -v
-
-  # Python 测试 + 覆盖率收集
-  python-coverage:
-    name: Python Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          python-version: '3.12'
-          install-python-deps: 'true'
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Python package
-        run: maturin develop
-
-      - name: Run Python tests and collect coverage
-        run: |
-          pytest tests/python --cov=python/pulsing --cov-report=xml:coverage.xml -v
-
-      - name: Upload Python coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-coverage
-          path: coverage.xml
-          retention-days: 30
-
-  # 上传覆盖率到 Codecov
-  codecov:
-    name: Upload Coverage to Codecov
-    needs: [rust-coverage, python-coverage]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Rust coverage report
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-coverage
-          path: .
-        continue-on-error: true
-
-      - name: Download Python coverage report
-        uses: actions/download-artifact@v4
-        with:
-          name: python-coverage
-          path: .
-        continue-on-error: true
-
-      - name: Check coverage files exist
-        run: |
-          echo "=== Coverage files check ==="
-          if [ -f coverage.lcov ]; then
-            echo "✓ coverage.lcov exists ($(wc -l < coverage.lcov) lines)"
-          else
-            echo "✗ coverage.lcov not found"
-          fi
-          if [ -f coverage.xml ]; then
-            echo "✓ coverage.xml exists ($(wc -l < coverage.xml) lines)"
-          else
-            echo "✗ coverage.xml not found"
-          fi
-
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          files: coverage.lcov,coverage.xml
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-          verbose: true
-
-  # Pre-commit 检查
-  pre-commit:
-    name: Pre-commit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: pre-commit/action@v3.0.1
-        with:
-          extra_args: --all-files
-
-  # 构建检查
-  build:
-    name: Build wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          python-version: '3.12'
+          python-version: '3.10'
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -224,5 +127,248 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
+          name: wheels-macos
           path: dist/*.whl
+
+  # ============================================
+  # 构建 Linux Wheel（x86-64 和 aarch64）
+  # ============================================
+  build-linux:
+    name: Build Wheel (Linux ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86-64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm64
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-env
+        with:
+          python-version: '3.10'
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          sccache: 'true'
+          manylinux: '2_17'
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.arch }}
+          path: dist/*.whl
+
+  # ============================================
+  # macOS Python 测试（多 Python 版本）
+  # ============================================
+  test-macos:
+    name: Test macOS (Python ${{ matrix.python-version }})
+    needs: build-macos
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-macos
+          path: dist/
+
+      - name: Install wheel and test dependencies
+        run: |
+          pip install dist/*.whl
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Test with pytest
+        run: pytest tests/python -v
+
+  # ============================================
+  # Ubuntu Python 测试（多版本 × 多架构 × 多 Python 版本）
+  # ============================================
+  test-ubuntu:
+    name: Test Ubuntu ${{ matrix.ubuntu }} ${{ matrix.arch }} (Python ${{ matrix.python-version }})
+    needs: build-linux
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ["20.04", "22.04", "24.04"]
+        arch: [x86-64, aarch64]
+        python-version: ["3.10", "3.11", "3.12"]
+        include:
+          # x86-64 runners
+          - ubuntu: "20.04"
+            arch: x86-64
+            runner: ubuntu-20.04
+          - ubuntu: "22.04"
+            arch: x86-64
+            runner: ubuntu-22.04
+          - ubuntu: "24.04"
+            arch: x86-64
+            runner: ubuntu-24.04
+          # aarch64 runners (only 24.04 available)
+          - ubuntu: "24.04"
+            arch: aarch64
+            runner: ubuntu-24.04-arm64
+        exclude:
+          # Ubuntu 20.04/22.04 ARM64 runner 不可用
+          - ubuntu: "20.04"
+            arch: aarch64
+          - ubuntu: "22.04"
+            arch: aarch64
+          # Ubuntu 20.04 不支持 Python 3.12
+          - ubuntu: "20.04"
+            python-version: "3.12"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.arch }}
+          path: dist/
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install wheel and test dependencies
+        run: |
+          pip install dist/*.whl
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Test with pytest
+        run: pytest tests/python -v
+
+  # ============================================
+  # Fedora Python 测试（x86-64）
+  # ============================================
+  test-fedora:
+    name: Test Fedora x86-64 (Python ${{ matrix.python-version }})
+    needs: build-linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-x86-64
+          path: dist/
+
+      - name: Test on Fedora
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace \
+            fedora:latest \
+            bash -c "
+              dnf install -y python${{ matrix.python-version }} python${{ matrix.python-version }}-pip && \
+              python${{ matrix.python-version }} -m pip install dist/*.whl && \
+              python${{ matrix.python-version }} -m pip install pytest pytest-asyncio pytest-cov && \
+              python${{ matrix.python-version }} -m pytest tests/python -v
+            "
+
+  # ============================================
+  # Python 覆盖率收集
+  # ============================================
+  python-coverage:
+    name: Python Coverage
+    needs: build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-x86-64
+          path: dist/
+
+      - name: Install wheel and test dependencies
+        run: |
+          pip install dist/*.whl
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Run tests and collect coverage
+        run: pytest tests/python --cov=pulsing --cov-report=xml:coverage.xml -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage.xml
+          retention-days: 30
+
+  # ============================================
+  # 上传覆盖率到 Codecov
+  # ============================================
+  codecov:
+    name: Upload Coverage
+    needs: [rust-coverage, python-coverage]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Rust coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-coverage
+          path: .
+        continue-on-error: true
+
+      - name: Download Python coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: python-coverage
+          path: .
+        continue-on-error: true
+
+      - name: Check coverage files
+        run: |
+          echo "=== Coverage files check ==="
+          [ -f coverage.lcov ] && echo "✓ coverage.lcov exists" || echo "✗ coverage.lcov not found"
+          [ -f coverage.xml ] && echo "✓ coverage.xml exists" || echo "✗ coverage.xml not found"
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.lcov,coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          verbose: true
