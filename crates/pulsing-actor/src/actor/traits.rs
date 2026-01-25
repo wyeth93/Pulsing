@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use futures::Stream;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
@@ -12,18 +13,16 @@ use tokio::sync::mpsc;
 
 /// Node identifier in the cluster (0 = local).
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Serialize, Deserialize, Default)]
-pub struct NodeId(pub u64);
+pub struct NodeId(pub u128);
 
 impl NodeId {
     pub const LOCAL: NodeId = NodeId(0);
 
     pub fn generate() -> Self {
-        let uuid = uuid::Uuid::new_v4();
-        let id = uuid.as_u128() as u64;
-        Self(if id == 0 { 1 } else { id })
+        Self(uuid::Uuid::new_v4().as_u128())
     }
 
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u128) -> Self {
         Self(id)
     }
 
@@ -35,7 +34,13 @@ impl NodeId {
 impl fmt::Display for NodeId {
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        if self.is_local() {
+            write!(f, "0")
+        } else {
+            // Format as UUID string for better readability
+            let uuid = uuid::Uuid::from_u128(self.0);
+            write!(f, "{}", uuid.simple())
+        }
     }
 }
 
@@ -44,27 +49,23 @@ impl fmt::Display for NodeId {
 pub struct ActorId(pub u128);
 
 impl ActorId {
-    pub fn new(node: NodeId, local_id: u64) -> Self {
-        Self(((node.0 as u128) << 64) | (local_id as u128))
+    /// Generate a new unique ActorId using UUID v4
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::new_v4().as_u128())
     }
 
-    pub fn local(local_id: u64) -> Self {
-        Self::new(NodeId::LOCAL, local_id)
-    }
-
-    pub fn node(&self) -> NodeId {
-        NodeId((self.0 >> 64) as u64)
-    }
-
-    pub fn local_id(&self) -> u64 {
-        self.0 as u64
+    /// Create an ActorId from a u128 value
+    pub fn new(id: u128) -> Self {
+        Self(id)
     }
 }
 
 impl fmt::Display for ActorId {
     #[cfg_attr(coverage_nightly, coverage(off))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.node().0, self.local_id())
+        // Format as UUID string for better readability
+        let uuid = uuid::Uuid::from_u128(self.0);
+        write!(f, "{}", uuid.simple())
     }
 }
 
@@ -79,6 +80,48 @@ pub enum StopReason {
     Killed,
     #[error("SystemShutdown")]
     SystemShutdown,
+}
+
+/// Message serialization format
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// Binary format (bincode)
+    Bincode,
+    /// JSON format (serde_json)
+    Json,
+    /// Auto-detect format (try JSON first, then bincode)
+    Auto,
+}
+
+impl Format {
+    /// Parse data using this format
+    pub fn parse<T: DeserializeOwned>(&self, data: &[u8]) -> anyhow::Result<T> {
+        match self {
+            Format::Bincode => Ok(bincode::deserialize(data)?),
+            Format::Json => Ok(serde_json::from_slice(data)?),
+            Format::Auto => {
+                // Try JSON first for Python compatibility, then bincode
+                match serde_json::from_slice(data) {
+                    Ok(value) => Ok(value),
+                    Err(_) => Ok(bincode::deserialize(data)?),
+                }
+            }
+        }
+    }
+
+    /// Serialize data using this format
+    #[allow(dead_code)]
+    pub fn serialize<T: Serialize>(&self, value: &T) -> anyhow::Result<Vec<u8>> {
+        match self {
+            Format::Bincode => Ok(bincode::serialize(value)?),
+            Format::Json => Ok(serde_json::to_vec(value)?),
+            Format::Auto => {
+                // Default to bincode for Auto serialization
+                Ok(bincode::serialize(value)?)
+            }
+        }
+    }
 }
 
 /// Message stream type (stream of Single messages).
@@ -115,6 +158,14 @@ impl Message {
         match self {
             Message::Single { data, .. } => Ok(bincode::deserialize(&data)?),
             Message::Stream { .. } => Err(anyhow::anyhow!("Cannot unpack stream message")),
+        }
+    }
+
+    /// Parse message data with auto-detection (JSON first, then bincode)
+    pub fn parse<M: DeserializeOwned>(&self) -> anyhow::Result<M> {
+        match self {
+            Message::Single { data, .. } => Format::Auto.parse(data),
+            Message::Stream { .. } => Err(anyhow::anyhow!("Cannot parse stream message")),
         }
     }
 
@@ -303,10 +354,13 @@ mod tests {
 
     #[test]
     fn test_actor_id() {
-        let node = NodeId::generate();
-        let id = ActorId::new(node, 123);
-        assert_eq!(id.local_id(), 123);
-        assert_eq!(id.node(), node);
+        let id = ActorId::generate();
+        // UUID-based IDs are unique and non-zero
+        assert_ne!(id.0, 0);
+
+        // Test creating from specific value
+        let id2 = ActorId::new(12345);
+        assert_eq!(id2.0, 12345);
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub use config::{
 };
 pub use handle::ActorStats;
 pub use load_balancer::NodeLoadTracker;
-pub use traits::{ActorSystemAdvancedExt, ActorSystemCoreExt, ActorSystemOpsExt};
+pub use traits::{ActorSystemCoreExt, ActorSystemOpsExt};
 
 use crate::actor::{ActorId, ActorPath, ActorRef, ActorResolver, ActorSystemRef, Envelope, NodeId};
 use crate::cluster::{GossipBackend, HeadNodeBackend, NamingBackend};
@@ -33,7 +33,6 @@ use dashmap::DashMap;
 use handle::LocalActorHandle;
 use handler::SystemMessageHandler;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -50,11 +49,11 @@ pub struct ActorSystem {
     /// Default mailbox capacity for actors
     pub(crate) default_mailbox_capacity: usize,
 
-    /// Local actors indexed by local_id (O(1) lookup by ActorId)
-    pub(crate) local_actors: Arc<DashMap<u64, LocalActorHandle>>,
+    /// Local actors indexed by ActorId (O(1) lookup by ActorId)
+    pub(crate) local_actors: Arc<DashMap<ActorId, LocalActorHandle>>,
 
-    /// Actor name to local_id mapping (for name-based lookups)
-    pub(crate) actor_names: Arc<DashMap<String, u64>>,
+    /// Actor name to ActorId mapping (for name-based lookups)
+    pub(crate) actor_names: Arc<DashMap<String, ActorId>>,
 
     /// Named actor path to local actor name mapping (path_string -> actor_name)
     pub(crate) named_actor_paths: Arc<DashMap<String, String>>,
@@ -70,9 +69,6 @@ pub struct ActorSystem {
 
     /// Actor lifecycle manager (watch, termination handling)
     pub(crate) lifecycle: Arc<ActorLifecycle>,
-
-    /// Actor ID counter (for generating unique local IDs)
-    pub(crate) actor_id_counter: AtomicU64,
 
     /// Default load balancing policy
     pub(crate) default_lb_policy: Arc<dyn LoadBalancingPolicy>,
@@ -90,15 +86,15 @@ impl ActorSystem {
     /// let system = ActorSystem::builder().build().await?;
     /// ```
     pub fn builder() -> ActorSystemBuilder {
-        ActorSystemBuilder::new()
+        ActorSystemBuilder::default()
     }
 
     /// Create a new actor system
     pub async fn new(config: SystemConfig) -> anyhow::Result<Arc<Self>> {
         let cancel_token = CancellationToken::new();
         let node_id = NodeId::generate();
-        let local_actors: Arc<DashMap<u64, LocalActorHandle>> = Arc::new(DashMap::new());
-        let actor_names: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());
+        let local_actors: Arc<DashMap<ActorId, LocalActorHandle>> = Arc::new(DashMap::new());
+        let actor_names: Arc<DashMap<String, ActorId>> = Arc::new(DashMap::new());
         let named_actor_paths: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
         let cluster_holder: Arc<RwLock<Option<Arc<dyn NamingBackend>>>> =
             Arc::new(RwLock::new(None));
@@ -176,7 +172,6 @@ impl ActorSystem {
             transport,
             cancel_token,
             lifecycle,
-            actor_id_counter: AtomicU64::new(1), // Start from 1 (0 reserved for system)
             default_lb_policy: Arc::new(RoundRobinPolicy::new()),
             node_load: Arc::new(DashMap::new()),
         });
@@ -217,7 +212,10 @@ impl ActorSystem {
 
         // Spawn as named actor with path "system" (use new_system to bypass namespace check)
         let system_path = ActorPath::new_system(SYSTEM_ACTOR_PATH)?;
-        self.spawn_named(system_path, system_actor).await?;
+        self.spawning()
+            .path(system_path)
+            .spawn(system_actor)
+            .await?;
 
         // Note: The local_actors_ref and actor_names_ref are used internally,
         // SystemRef snapshot may become stale for new actors but that's acceptable
@@ -250,7 +248,10 @@ impl ActorSystem {
 
         // Spawn as named actor (use new_system to bypass namespace check)
         let system_path = ActorPath::new_system(SYSTEM_ACTOR_PATH)?;
-        self.spawn_named(system_path, system_actor).await?;
+        self.spawning()
+            .path(system_path)
+            .spawn(system_actor)
+            .await?;
 
         tracing::debug!(
             path = SYSTEM_ACTOR_PATH,
@@ -304,24 +305,20 @@ impl ActorSystemRef for ActorSystem {
     }
 
     async fn watch(&self, watcher: &ActorId, target: &ActorId) -> anyhow::Result<()> {
-        // Only support local watching for now
-        if target.node() != self.node_id {
+        // Check if target is a local actor
+        if !self.local_actors.contains_key(target) {
             return Err(anyhow::anyhow!(
                 "Cannot watch remote actor: {} (watching remote actors not yet supported)",
                 target
             ));
         }
 
-        let watcher_key = watcher.to_string();
-        let target_key = target.to_string();
-        self.lifecycle.watch(&watcher_key, &target_key).await;
+        self.lifecycle.watch(watcher, target).await;
         Ok(())
     }
 
     async fn unwatch(&self, watcher: &ActorId, target: &ActorId) -> anyhow::Result<()> {
-        let watcher_key = watcher.to_string();
-        let target_key = target.to_string();
-        self.lifecycle.unwatch(&watcher_key, &target_key).await;
+        self.lifecycle.unwatch(watcher, target).await;
         Ok(())
     }
 

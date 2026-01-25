@@ -57,13 +57,6 @@ pub trait ActorSystemCoreExt: Sized {
     where
         P: IntoActorPath + Send;
 
-    /// Resolve a named actor with custom options (load balancing, node filtering)
-    async fn resolve_with_options(
-        &self,
-        name: &ActorPath,
-        options: ResolveOptions,
-    ) -> anyhow::Result<ActorRef>;
-
     /// Get a builder for resolving actors with advanced options.
     fn resolving(&self) -> ResolveBuilder<'_>;
 }
@@ -71,7 +64,8 @@ pub trait ActorSystemCoreExt: Sized {
 /// Builder for spawning actors with advanced options.
 pub struct SpawnBuilder<'a> {
     system: &'a Arc<ActorSystem>,
-    name: Option<String>,
+    name: Option<ActorPath>,
+    name_error: Option<String>,
     options: SpawnOptions,
 }
 
@@ -81,13 +75,41 @@ impl<'a> SpawnBuilder<'a> {
         Self {
             system,
             name: None,
+            name_error: None,
             options: SpawnOptions::default(),
         }
     }
 
     /// Set the actor name (makes it resolvable by name)
+    ///
+    /// The name will be validated as an ActorPath. For user actors,
+    /// use paths like "services/echo" or "actors/counter".
+    ///
+    /// If validation fails, the error will be stored and returned when `spawn()` or `spawn_factory()` is called.
     pub fn name(mut self, name: impl AsRef<str>) -> Self {
-        self.name = Some(name.as_ref().to_string());
+        match ActorPath::new(name.as_ref()) {
+            Ok(path) => {
+                self.name = Some(path);
+                self.name_error = None; // Clear any previous error
+            }
+            Err(e) => {
+                // Store error message for later reporting
+                self.name_error = Some(format!("Invalid actor path '{}': {}", name.as_ref(), e));
+                self.name = None;
+                tracing::warn!("{}", self.name_error.as_ref().unwrap());
+            }
+        }
+        self
+    }
+
+    /// Set the actor path directly (allows system paths)
+    ///
+    /// This method allows setting an already-validated ActorPath directly,
+    /// bypassing the string validation in `name()`. This is useful when
+    /// you already have an ActorPath or need to use system namespace paths.
+    pub fn path(mut self, path: ActorPath) -> Self {
+        self.name = Some(path);
+        self.name_error = None; // Clear any previous error
         self
     }
 
@@ -122,20 +144,41 @@ impl<'a> SpawnBuilder<'a> {
         A: IntoActor,
     {
         let actor = actor.into_actor();
+        // Create a once-use factory from the actor instance
+        let mut actor_opt = Some(actor);
+        let factory = move || {
+            actor_opt
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Actor cannot be restarted (spawned as instance)"))
+        };
+        self.spawn_factory(factory).await
+    }
+
+    /// Spawn an actor using a factory function
+    ///
+    /// Factory-based spawning enables supervision restarts - when an actor fails,
+    /// the system can recreate it using the factory function.
+    ///
+    /// Note: Only named actors support supervision/restart. Anonymous actors
+    /// cannot be restarted because they have no stable identity for re-resolution.
+    pub async fn spawn_factory<F, A>(self, factory: F) -> anyhow::Result<ActorRef>
+    where
+        F: FnMut() -> anyhow::Result<A> + Send + 'static,
+        A: Actor,
+    {
+        // Check if name validation failed
+        if let Some(ref error) = self.name_error {
+            return Err(anyhow::anyhow!("{}", error));
+        }
+
         match self.name {
-            Some(name) => {
+            Some(path) => {
                 // Named actor: resolvable by name
-                ActorSystem::spawn_named_with_options(
-                    self.system,
-                    name.as_str(),
-                    actor,
-                    self.options,
-                )
-                .await
+                ActorSystem::spawn_internal(self.system, Some(path), factory, self.options).await
             }
             None => {
                 // Anonymous actor: not resolvable
-                ActorSystem::spawn_anonymous_with_options(self.system, actor, self.options).await
+                ActorSystem::spawn_internal(self.system, None, factory, self.options).await
             }
         }
     }
@@ -144,9 +187,7 @@ impl<'a> SpawnBuilder<'a> {
 /// Builder for resolving actors with advanced options.
 pub struct ResolveBuilder<'a> {
     system: &'a Arc<ActorSystem>,
-    node_id: Option<NodeId>,
-    policy: Option<Arc<dyn LoadBalancingPolicy>>,
-    filter_alive: bool,
+    options: ResolveOptions,
 }
 
 impl<'a> ResolveBuilder<'a> {
@@ -154,41 +195,26 @@ impl<'a> ResolveBuilder<'a> {
     pub(crate) fn new(system: &'a Arc<ActorSystem>) -> Self {
         Self {
             system,
-            node_id: None,
-            policy: None,
-            filter_alive: true,
+            options: ResolveOptions::default(),
         }
     }
 
     /// Target a specific node (bypasses load balancing)
     pub fn node(mut self, node_id: NodeId) -> Self {
-        self.node_id = Some(node_id);
+        self.options = self.options.node_id(node_id);
         self
     }
 
     /// Set load balancing policy
     pub fn policy(mut self, policy: Arc<dyn LoadBalancingPolicy>) -> Self {
-        self.policy = Some(policy);
+        self.options = self.options.policy(policy);
         self
     }
 
     /// Set whether to filter only alive nodes (default: true)
     pub fn filter_alive(mut self, filter: bool) -> Self {
-        self.filter_alive = filter;
+        self.options = self.options.filter_alive(filter);
         self
-    }
-
-    /// Build ResolveOptions from this builder
-    fn build_options(&self) -> ResolveOptions {
-        let mut options = ResolveOptions::new();
-        if let Some(node_id) = self.node_id {
-            options = options.node_id(node_id);
-        }
-        if let Some(ref policy) = self.policy {
-            options = options.policy(policy.clone());
-        }
-        options = options.filter_alive(self.filter_alive);
-        options
     }
 
     /// Resolve a named actor
@@ -197,8 +223,7 @@ impl<'a> ResolveBuilder<'a> {
         P: IntoActorPath + Send,
     {
         let path = name.into_actor_path()?;
-        let options = self.build_options();
-        ActorSystem::resolve_named_with_options(self.system, &path, options).await
+        ActorSystem::resolve_named_with_options(self.system, &path, self.options).await
     }
 
     /// List all instances of a named actor
@@ -207,7 +232,7 @@ impl<'a> ResolveBuilder<'a> {
         P: IntoActorPath + Send,
     {
         let path = name.into_actor_path()?;
-        ActorSystem::resolve_all_instances(self.system, &path, self.filter_alive).await
+        ActorSystem::resolve_all_instances(self.system, &path, self.options.filter_alive).await
     }
 
     /// Lazy resolve - returns ActorRef that auto re-resolves when stale
@@ -217,38 +242,6 @@ impl<'a> ResolveBuilder<'a> {
     {
         ActorSystem::resolve_named_lazy(self.system, name)
     }
-}
-
-// =============================================================================
-// Advanced Trait: Factory-based Spawning (Supervision/Restart)
-// =============================================================================
-
-/// Advanced API for factory-based actor spawning.
-///
-/// Factory-based spawning enables supervision restarts - when an actor fails,
-/// the system can recreate it using the factory function.
-///
-/// Note: Regular `spawn` methods use a one-shot factory internally, so the actor
-/// cannot be restarted. Use `spawn_named_factory` if you need supervision with
-/// restart capability. Anonymous actors do not support supervision.
-///
-///
-#[async_trait::async_trait]
-pub trait ActorSystemAdvancedExt {
-    /// Spawn a named actor using a factory function (enables supervision restarts)
-    ///
-    /// Note: Only named actors support supervision/restart. Anonymous actors cannot
-    /// be restarted because they have no stable identity for re-resolution.
-    async fn spawn_named_factory<P, F, A>(
-        &self,
-        name: P,
-        factory: F,
-        options: SpawnOptions,
-    ) -> anyhow::Result<ActorRef>
-    where
-        P: IntoActorPath + Send,
-        F: FnMut() -> anyhow::Result<A> + Send + 'static,
-        A: Actor;
 }
 
 /// Operations, introspection, and lifecycle management API.
@@ -274,20 +267,6 @@ pub trait ActorSystemOpsExt {
 
     /// Get a local actor reference by name
     fn local_actor_ref_by_name(&self, name: &str) -> Option<ActorRef>;
-
-    /// Spawn an anonymous actor (no name, only accessible via ActorRef)
-    async fn spawn_anonymous<A>(&self, actor: A) -> anyhow::Result<ActorRef>
-    where
-        A: IntoActor;
-
-    /// Spawn an anonymous actor with custom options
-    async fn spawn_anonymous_with_options<A>(
-        &self,
-        actor: A,
-        options: SpawnOptions,
-    ) -> anyhow::Result<ActorRef>
-    where
-        A: IntoActor;
 
     /// Get load tracker for a node address
     fn get_node_load_tracker(&self, addr: &SocketAddr) -> Option<Arc<NodeLoadTracker>>;
@@ -315,9 +294,6 @@ pub trait ActorSystemOpsExt {
         &self,
         address: &crate::actor::ActorAddress,
     ) -> anyhow::Result<ActorRef>;
-
-    /// Get all instances of a named actor across the cluster
-    async fn get_named_instances(&self, path: &ActorPath) -> Vec<MemberInfo>;
 
     /// Get detailed instances with actor_id and metadata
     async fn get_named_instances_detailed(
@@ -373,7 +349,7 @@ impl ActorSystemCoreExt for Arc<ActorSystem> {
     where
         A: IntoActor,
     {
-        ActorSystem::spawn_anonymous(self, actor.into_actor()).await
+        self.spawning().spawn(actor).await
     }
 
     async fn spawn_named<A>(
@@ -384,14 +360,7 @@ impl ActorSystemCoreExt for Arc<ActorSystem> {
     where
         A: IntoActor,
     {
-        let name = name.as_ref();
-        ActorSystem::spawn_named_with_options(
-            self,
-            name,
-            actor.into_actor(),
-            SpawnOptions::default(),
-        )
-        .await
+        self.spawning().name(name).spawn(actor).await
     }
 
     fn spawning(&self) -> SpawnBuilder<'_> {
@@ -409,33 +378,8 @@ impl ActorSystemCoreExt for Arc<ActorSystem> {
         ActorSystem::resolve_named(self.as_ref(), name, None).await
     }
 
-    async fn resolve_with_options(
-        &self,
-        name: &ActorPath,
-        options: ResolveOptions,
-    ) -> anyhow::Result<ActorRef> {
-        ActorSystem::resolve_named_with_options(self.as_ref(), name, options).await
-    }
-
     fn resolving(&self) -> ResolveBuilder<'_> {
         ResolveBuilder::new(self)
-    }
-}
-
-#[async_trait::async_trait]
-impl ActorSystemAdvancedExt for Arc<ActorSystem> {
-    async fn spawn_named_factory<P, F, A>(
-        &self,
-        name: P,
-        factory: F,
-        options: SpawnOptions,
-    ) -> anyhow::Result<ActorRef>
-    where
-        P: IntoActorPath + Send,
-        F: FnMut() -> anyhow::Result<A> + Send + 'static,
-        A: Actor,
-    {
-        ActorSystem::spawn_named_factory(self, name, factory, options).await
     }
 }
 
@@ -468,24 +412,6 @@ impl ActorSystemOpsExt for Arc<ActorSystem> {
         ActorSystem::local_actor_ref_by_name(self.as_ref(), name)
     }
 
-    async fn spawn_anonymous<A>(&self, actor: A) -> anyhow::Result<ActorRef>
-    where
-        A: IntoActor,
-    {
-        ActorSystem::spawn_anonymous(self, actor).await
-    }
-
-    async fn spawn_anonymous_with_options<A>(
-        &self,
-        actor: A,
-        options: SpawnOptions,
-    ) -> anyhow::Result<ActorRef>
-    where
-        A: IntoActor,
-    {
-        ActorSystem::spawn_anonymous_with_options(self, actor, options).await
-    }
-
     fn get_node_load_tracker(&self, addr: &SocketAddr) -> Option<Arc<NodeLoadTracker>> {
         ActorSystem::get_node_load_tracker(self.as_ref(), addr)
     }
@@ -507,10 +433,6 @@ impl ActorSystemOpsExt for Arc<ActorSystem> {
         address: &crate::actor::ActorAddress,
     ) -> anyhow::Result<ActorRef> {
         ActorSystem::resolve(self.as_ref(), address).await
-    }
-
-    async fn get_named_instances(&self, path: &ActorPath) -> Vec<MemberInfo> {
-        ActorSystem::get_named_instances(self.as_ref(), path).await
     }
 
     async fn get_named_instances_detailed(

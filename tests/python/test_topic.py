@@ -729,7 +729,6 @@ async def test_double_start_stop(actor_system):
 async def test_topic_broker_via_storage_manager(actor_system):
     """Test that topic broker is created via StorageManager."""
     from pulsing.queue.manager import get_storage_manager
-    from pulsing.actor import Message
 
     # Ensure StorageManager exists
     manager = await get_storage_manager(actor_system)
@@ -738,9 +737,8 @@ async def test_topic_broker_via_storage_manager(actor_system):
     writer = await write_topic(actor_system, "sm_integration_topic")
     await writer.publish({"test": True})
 
-    # Check stats include topics
-    response = await manager.ask(Message.from_json("GetStats", {}))
-    stats = response.to_json()
+    # Check stats include topics via proxy method
+    stats = await manager.get_stats()
 
     assert "topic_count" in stats
     assert stats["topic_count"] >= 1
@@ -751,7 +749,6 @@ async def test_topic_broker_via_storage_manager(actor_system):
 async def test_list_topics(actor_system):
     """Test listing topics via StorageManager."""
     from pulsing.queue.manager import get_storage_manager
-    from pulsing.actor import Message
 
     # Create some topics
     await write_topic(actor_system, "list_topic_1")
@@ -763,13 +760,12 @@ async def test_list_topics(actor_system):
     await w1.publish({"test": 1})
     await w2.publish({"test": 2})
 
+    # List topics via proxy method
     manager = await get_storage_manager(actor_system)
-    response = await manager.ask(Message.from_json("ListTopics", {}))
-    data = response.to_json()
+    topics = await manager.list_topics()
 
-    assert "topics" in data
-    assert "list_topic_1" in data["topics"]
-    assert "list_topic_2" in data["topics"]
+    assert "list_topic_1" in topics
+    assert "list_topic_2" in topics
 
 
 # ============================================================================
@@ -894,20 +890,11 @@ async def test_publish_timeout_error(actor_system):
     actor_name = "_topic_sub_timeout_error_topic_slow_sub"
     await actor_system.spawn(slow_actor, name=actor_name, public=True)
 
-    # Register with broker
-    from pulsing.queue.manager import get_topic_broker
-    from pulsing.actor import Message
+    # Register with broker using helper function
+    from pulsing.topic import subscribe_to_topic
 
-    broker = await get_topic_broker(actor_system, "timeout_error_topic")
-    await broker.ask(
-        Message.from_json(
-            "Subscribe",
-            {
-                "subscriber_id": "slow_sub",
-                "actor_name": actor_name,
-                "node_id": actor_system.node_id.id,
-            },
-        )
+    await subscribe_to_topic(
+        actor_system, "timeout_error_topic", "slow_sub", actor_name
     )
 
     # Publish with very short timeout - should timeout
@@ -1024,8 +1011,7 @@ async def test_subscriber_failure_threshold_eviction(actor_system):
 
     Verify P0-3 fix: Subscribers are automatically evicted after 3 consecutive failures.
     """
-    from pulsing.actor import Actor, ActorId, Message
-    from pulsing.queue.manager import get_topic_broker
+    from pulsing.actor import Actor, ActorId
     from pulsing.topic.broker import MAX_CONSECUTIVE_FAILURES
 
     # Verify configuration constants
@@ -1048,17 +1034,11 @@ async def test_subscriber_failure_threshold_eviction(actor_system):
     actor_name = "_topic_sub_eviction_test_topic_failing"
     await actor_system.spawn(failing_actor, name=actor_name, public=True)
 
-    # Register failing subscriber with broker
-    broker = await get_topic_broker(actor_system, "eviction_test_topic")
-    await broker.ask(
-        Message.from_json(
-            "Subscribe",
-            {
-                "subscriber_id": "failing_sub",
-                "actor_name": actor_name,
-                "node_id": actor_system.node_id.id,
-            },
-        )
+    # Register failing subscriber with broker using helper function
+    from pulsing.topic import subscribe_to_topic
+
+    await subscribe_to_topic(
+        actor_system, "eviction_test_topic", "failing_sub", actor_name
     )
 
     # Get initial statistics
