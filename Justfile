@@ -194,7 +194,7 @@ ci-test:
     #!/usr/bin/env bash
     export PATH="$HOME/.local/bin:$PATH"
     pip install dist/*.whl pytest pytest-asyncio 2>/dev/null || uv pip install --system dist/*.whl pytest pytest-asyncio
-    python -m pytest tests/python -v
+    python3 -m pytest tests/python -v
 
 # =============================================================================
 # 本地模拟 CI 流水线 (Action 命令)
