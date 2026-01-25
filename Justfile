@@ -128,7 +128,6 @@ ensure-uv:
         echo "==> Installing uv..."
         curl -LsSf https://astral.sh/uv/install.sh | sh
     fi
-    . ~/.local/bin/env 2>/dev/null || true
 
 # 安装 Rust (如果不存在)
 ensure-rust:
@@ -139,18 +138,13 @@ ensure-rust:
         echo "==> Installing Rust..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     fi
-    . ~/.cargo/env 2>/dev/null || true
 
 # --- Manylinux (CentOS) 环境准备 ---
 ci-setup-manylinux: ensure-rust ensure-uv
     #!/usr/bin/env bash
-    set -e
-    echo "==> Installing system dependencies..."
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     yum install -y gcc gcc-c++ openssl-devel perl-IPC-Cmd
-    . ~/.local/bin/env
-    echo "==> Installing Python 3.10..."
     uv python install 3.10
-    echo "==> Installing maturin and pytest..."
     uv tool install maturin
     uv tool install pytest
     echo "==> Setup complete!"
@@ -158,9 +152,7 @@ ci-setup-manylinux: ensure-rust ensure-uv
 # --- macOS 环境准备 ---
 ci-setup-macos: ensure-rust ensure-uv
     #!/usr/bin/env bash
-    set -e
-    . ~/.local/bin/env 2>/dev/null || true
-    echo "==> Installing Python tools..."
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     uv tool install maturin
     uv tool install pytest
     echo "==> Setup complete!"
@@ -168,20 +160,15 @@ ci-setup-macos: ensure-rust ensure-uv
 # --- Fedora 环境准备 ---
 ci-setup-fedora python_version="3.12": ensure-uv
     #!/usr/bin/env bash
-    set -e
-    echo "==> Installing Python {{python_version}}..."
+    export PATH="$HOME/.local/bin:$PATH"
     dnf install -y python{{python_version}}
-    . ~/.local/bin/env 2>/dev/null || true
-    echo "==> Installing test dependencies..."
     uv tool install pytest
     echo "==> Setup complete!"
 
 # --- Debian/Ubuntu 环境准备 ---
 ci-setup-debian: ensure-uv
     #!/usr/bin/env bash
-    set -e
-    . ~/.local/bin/env 2>/dev/null || true
-    echo "==> Installing test dependencies..."
+    export PATH="$HOME/.local/bin:$PATH"
     uv tool install pytest
     echo "==> Setup complete!"
 
@@ -192,25 +179,19 @@ ci-setup-debian: ensure-uv
 # 构建 wheel (通用)
 ci-build manylinux="":
     #!/usr/bin/env bash
-    set -e
-    echo "==> Building wheel..."
-    . ~/.cargo/env 2>/dev/null || true
-    . ~/.local/bin/env 2>/dev/null || true
+    export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
     if [ "{{manylinux}}" = "true" ]; then
         maturin build --release --out dist -i python3.10 --compatibility manylinux_2_17
     else
         maturin build --release --out dist
     fi
-    echo "==> Build complete! Wheel in dist/"
+    echo "==> Build complete!"
 
 # 测试 wheel (通用)
 ci-test:
     #!/usr/bin/env bash
-    set -e
-    echo "==> Installing wheel..."
-    . ~/.local/bin/env 2>/dev/null || true
+    export PATH="$HOME/.local/bin:$PATH"
     pip install dist/*.whl 2>/dev/null || uv pip install --system dist/*.whl
-    echo "==> Running tests..."
     pytest tests/python -v
 
 # =============================================================================
