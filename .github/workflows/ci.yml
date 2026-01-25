@@ -131,22 +131,11 @@ jobs:
           path: dist/*.whl
 
   # ============================================
-  # 构建 Linux Wheel（x86-64 和 aarch64）
+  # 构建 Linux x86-64 Wheel
   # ============================================
-  build-linux:
-    name: Build Wheel (Linux ${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86-64
-            runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - arch: aarch64
-            runner: ubuntu-24.04-arm64
-            target: aarch64-unknown-linux-gnu
-
+  build-linux-x86-64:
+    name: Build Wheel (Linux x86-64)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -161,7 +150,7 @@ jobs:
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
+          target: x86_64-unknown-linux-gnu
           args: --release --out dist
           sccache: 'true'
           manylinux: '2_17'
@@ -169,7 +158,35 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.arch }}
+          name: wheels-linux-x86-64
+          path: dist/*.whl
+
+  # ============================================
+  # 构建 Linux aarch64 Wheel（使用 QEMU 仿真）
+  # ============================================
+  build-linux-aarch64:
+    name: Build Wheel (Linux aarch64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: aarch64-unknown-linux-gnu
+          args: --release --out dist
+          sccache: 'true'
+          manylinux: '2_17'
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-aarch64
           path: dist/*.whl
 
   # ============================================
@@ -207,39 +224,25 @@ jobs:
         run: pytest tests/python -v
 
   # ============================================
-  # Ubuntu Python 测试（多版本 × 多架构 × 多 Python 版本）
+  # Ubuntu x86-64 Python 测试（多版本 × 多 Python 版本）
   # ============================================
-  test-ubuntu:
-    name: Test Ubuntu ${{ matrix.ubuntu }} ${{ matrix.arch }} (Python ${{ matrix.python-version }})
-    needs: build-linux
+  test-ubuntu-x86-64:
+    name: Test Ubuntu ${{ matrix.ubuntu }} x86-64 (Python ${{ matrix.python-version }})
+    needs: build-linux-x86-64
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         ubuntu: ["20.04", "22.04", "24.04"]
-        arch: [x86-64, aarch64]
         python-version: ["3.10", "3.11", "3.12"]
         include:
-          # x86-64 runners
           - ubuntu: "20.04"
-            arch: x86-64
             runner: ubuntu-20.04
           - ubuntu: "22.04"
-            arch: x86-64
             runner: ubuntu-22.04
           - ubuntu: "24.04"
-            arch: x86-64
             runner: ubuntu-24.04
-          # aarch64 runners (only 24.04 available)
-          - ubuntu: "24.04"
-            arch: aarch64
-            runner: ubuntu-24.04-arm64
         exclude:
-          # Ubuntu 20.04/22.04 ARM64 runner 不可用
-          - ubuntu: "20.04"
-            arch: aarch64
-          - ubuntu: "22.04"
-            arch: aarch64
           # Ubuntu 20.04 不支持 Python 3.12
           - ubuntu: "20.04"
             python-version: "3.12"
@@ -250,7 +253,7 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.arch }}
+          name: wheels-linux-x86-64
           path: dist/
 
       - name: Setup Python
@@ -267,11 +270,48 @@ jobs:
         run: pytest tests/python -v
 
   # ============================================
+  # Ubuntu aarch64 Python 测试（使用 QEMU 仿真）
+  # ============================================
+  test-ubuntu-aarch64:
+    name: Test Ubuntu aarch64 (Python ${{ matrix.python-version }})
+    needs: build-linux-aarch64
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-aarch64
+          path: dist/
+
+      - name: Test on Ubuntu aarch64 (QEMU)
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace -w /workspace \
+            python:${{ matrix.python-version }}-slim \
+            bash -c "
+              pip install dist/*.whl && \
+              pip install pytest pytest-asyncio pytest-cov && \
+              pytest tests/python -v
+            "
+
+  # ============================================
   # Fedora Python 测试（x86-64）
   # ============================================
   test-fedora:
     name: Test Fedora x86-64 (Python ${{ matrix.python-version }})
-    needs: build-linux
+    needs: build-linux-x86-64
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -303,7 +343,7 @@ jobs:
   # ============================================
   python-coverage:
     name: Python Coverage
-    needs: build-linux
+    needs: build-linux-x86-64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
