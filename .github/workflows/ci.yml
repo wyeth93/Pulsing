@@ -186,6 +186,7 @@ jobs:
             quay.io/pypa/manylinux2014_aarch64 \
             bash -c "
               export PATH=/opt/python/cp310-cp310/bin:\$PATH && \
+              yum install -y gcc gcc-c++ openssl-devel perl-IPC-Cmd && \
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
               source ~/.cargo/env && \
               pip install maturin && \
