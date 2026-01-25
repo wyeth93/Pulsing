@@ -122,6 +122,7 @@ cov-open:
 # 安装 uv (如果不存在)
 ensure-uv:
     #!/usr/bin/env bash
+    export PATH="$HOME/.local/bin:$PATH"
     if command -v uv &> /dev/null; then
         echo "==> uv already installed"
     else
@@ -132,6 +133,7 @@ ensure-uv:
 # 安装 Rust (如果不存在)
 ensure-rust:
     #!/usr/bin/env bash
+    export PATH="$HOME/.cargo/bin:$PATH"
     if command -v rustc &> /dev/null; then
         echo "==> Rust already installed"
     else

@@ -91,7 +91,7 @@ jobs:
           export CARGO_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR
           export CARGO_INCREMENTAL=1
           cargo llvm-cov clean --workspace
-          cargo nextest run --workspace --exclude pulsing-py --exclude pulsing-bench-py
+          cargo test --workspace --exclude pulsing-py --exclude pulsing-bench-py
           cargo llvm-cov --no-run --lcov --output-path coverage.lcov
 
       - name: Upload coverage report
