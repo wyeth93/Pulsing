@@ -303,7 +303,8 @@ jobs:
             python:${{ matrix.python-version }}-slim \
             bash -c "
               curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
-              just debian-test
+              just ci-setup-debian && \
+              just ci-test
             "
 
   # ============================================
@@ -333,8 +334,8 @@ jobs:
             fedora:latest \
             bash -c "
               curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
-              just fedora-setup ${{ matrix.python-version }} && \
-              just fedora-test ${{ matrix.python-version }}
+              just ci-setup-fedora ${{ matrix.python-version }} && \
+              just ci-test
             "
 
   # ============================================
