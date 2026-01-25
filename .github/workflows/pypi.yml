@@ -64,10 +64,11 @@ jobs:
             -v ~/.cargo/registry:/root/.cargo/registry \
             quay.io/pypa/manylinux2014_aarch64 \
             bash -c "
+              export PATH=/opt/python/cp310-cp310/bin:\$PATH && \
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
               source ~/.cargo/env && \
-              pip3.10 install maturin && \
-              maturin build --release --out dist --compatibility manylinux_2_17
+              pip install maturin && \
+              maturin build --release --out dist -i python3.10 --compatibility manylinux_2_17
             "
 
       - name: Upload wheels
