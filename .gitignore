@@ -117,3 +117,4 @@ docs/site/
 # Cleanup
 stress_test_*.json
 queue_benchmark_*.json
+dist/*.whl

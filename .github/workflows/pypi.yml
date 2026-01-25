@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   # ============================================
-  # Build Linux x86-64 wheels
+  # Build Linux x86-64 wheels (使用 just 命令)
   # ============================================
   linux-x86-64:
     name: Build Linux x86-64 wheels
@@ -21,18 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Build Environment
-        uses: ./.github/actions/setup-build-env
-        with:
-          python-version: '3.10'
-
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64-unknown-linux-gnu
-          args: --release --out dist
-          sccache: 'true'
-          manylinux: '2_17'
+      - name: Build wheel in manylinux container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace -w /workspace \
+            quay.io/pypa/manylinux2014_x86_64 \
+            bash -c "
+              curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
+              just ci-setup-manylinux && \
+              just ci-build manylinux=true
+            "
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -64,8 +62,8 @@ jobs:
             quay.io/pypa/manylinux2014_aarch64 \
             bash -c "
               curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
-              just manylinux-setup && \
-              just manylinux-build
+              just ci-setup-manylinux && \
+              just ci-build manylinux=true
             "
 
       - name: Upload wheels
