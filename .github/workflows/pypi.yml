@@ -61,15 +61,11 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace -w /workspace \
-            -v ~/.cargo/registry:/root/.cargo/registry \
             quay.io/pypa/manylinux2014_aarch64 \
             bash -c "
-              export PATH=/opt/python/cp310-cp310/bin:\$PATH && \
-              yum install -y gcc gcc-c++ openssl-devel perl-IPC-Cmd && \
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-              source ~/.cargo/env && \
-              pip install maturin && \
-              maturin build --release --out dist -i python3.10 --compatibility manylinux_2_17
+              curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
+              just manylinux-setup && \
+              just manylinux-build
             "
 
       - name: Upload wheels

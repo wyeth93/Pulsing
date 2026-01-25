@@ -97,6 +97,63 @@ cov-open:
     fi
 
 # =============================================================================
+# CI 环境准备命令 (在各种容器内执行)
+# =============================================================================
+
+# --- Manylinux (CentOS) 构建环境 ---
+# 用法: docker run --platform linux/arm64 -v $PWD:/workspace -w /workspace \
+#       quay.io/pypa/manylinux2014_aarch64 bash -c "just manylinux-setup && just manylinux-build"
+
+# Manylinux 容器内安装构建依赖
+manylinux-setup:
+    yum install -y gcc gcc-c++ openssl-devel perl-IPC-Cmd
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    . ~/.cargo/env && pip install maturin pytest pytest-asyncio
+
+# Manylinux 容器内构建 wheel
+manylinux-build:
+    . ~/.cargo/env && maturin build --release --out dist -i /opt/python/cp310-cp310/bin/python3.10 --compatibility manylinux_2_17
+
+# Manylinux 容器内运行测试
+manylinux-test:
+    pip install dist/*aarch64*.whl && pytest tests/python -v
+
+# --- Fedora 测试环境 ---
+# 用法: docker run -v $PWD:/workspace -w /workspace fedora:latest bash -c "just fedora-setup 3.12 && just fedora-test 3.12"
+
+# Fedora 容器内安装 Python 和依赖
+fedora-setup python_version="3.12":
+    dnf install -y python{{python_version}} python{{python_version}}-pip
+
+# Fedora 容器内安装 wheel 并运行测试
+fedora-test python_version="3.12":
+    python{{python_version}} -m pip install dist/*.whl
+    python{{python_version}} -m pip install pytest pytest-asyncio pytest-cov
+    python{{python_version}} -m pytest tests/python -v
+
+# --- Ubuntu/Debian 测试环境 (python:slim 镜像) ---
+# 用法: docker run --platform linux/arm64 -v $PWD:/workspace -w /workspace \
+#       python:3.12-slim bash -c "just debian-test"
+
+# Debian/Ubuntu slim 容器内安装 wheel 并运行测试
+debian-test:
+    pip install dist/*.whl
+    pip install pytest pytest-asyncio pytest-cov
+    pytest tests/python -v
+
+# --- 通用 CI 辅助命令 ---
+
+# 安装 Python 测试依赖
+ci-install-test-deps:
+    pip install pytest pytest-asyncio pytest-cov
+
+# 安装 wheel 并测试
+ci-test-wheel:
+    pip install dist/*.whl
+    pip install pytest pytest-asyncio pytest-cov
+    pytest tests/python -v
+
+# =============================================================================
 # Maintenance
 # =============================================================================
 

@@ -182,15 +182,11 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace -w /workspace \
-            -v ~/.cargo/registry:/root/.cargo/registry \
             quay.io/pypa/manylinux2014_aarch64 \
             bash -c "
-              export PATH=/opt/python/cp310-cp310/bin:\$PATH && \
-              yum install -y gcc gcc-c++ openssl-devel perl-IPC-Cmd && \
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-              source ~/.cargo/env && \
-              pip install maturin && \
-              maturin build --release --out dist -i python3.10 --compatibility manylinux_2_17
+              curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
+              just manylinux-setup && \
+              just manylinux-build
             "
 
       - name: Upload wheels
@@ -311,9 +307,8 @@ jobs:
             -v ${{ github.workspace }}:/workspace -w /workspace \
             python:${{ matrix.python-version }}-slim \
             bash -c "
-              pip install dist/*.whl && \
-              pip install pytest pytest-asyncio pytest-cov && \
-              pytest tests/python -v
+              curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
+              just debian-test
             "
 
   # ============================================
@@ -342,10 +337,9 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace \
             fedora:latest \
             bash -c "
-              dnf install -y python${{ matrix.python-version }} python${{ matrix.python-version }}-pip && \
-              python${{ matrix.python-version }} -m pip install dist/*.whl && \
-              python${{ matrix.python-version }} -m pip install pytest pytest-asyncio pytest-cov && \
-              python${{ matrix.python-version }} -m pytest tests/python -v
+              curl -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin && \
+              just fedora-setup ${{ matrix.python-version }} && \
+              just fedora-test ${{ matrix.python-version }}
             "
 
   # ============================================
