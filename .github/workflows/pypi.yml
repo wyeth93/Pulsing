@@ -62,7 +62,7 @@ jobs:
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace -w /workspace \
             -v ~/.cargo/registry:/root/.cargo/registry \
-            quay.io/pypa/manylinux_2_17_aarch64 \
+            quay.io/pypa/manylinux2014_aarch64 \
             bash -c "
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
               source ~/.cargo/env && \
