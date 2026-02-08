@@ -22,6 +22,21 @@ def _get_protocol_version() -> int:
     return _DEFAULT_PROTOCOL_VERSION
 
 
+def _consume_task_exception(task: asyncio.Task) -> None:
+    """Consume exception from background task to avoid 'Task exception was never retrieved'."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except (RuntimeError, OSError, ConnectionError) as e:
+        if "closed" in str(e).lower() or "stream" in str(e).lower():
+            logging.getLogger(__name__).debug("Stream closed before response: %s", e)
+        else:
+            logging.getLogger(__name__).exception("Stream task failed: %s", e)
+    except Exception:
+        logging.getLogger(__name__).exception("Stream task failed")
+
+
 def _detect_protocol_version(msg: dict) -> int:
     """Auto-detect protocol version from message.
 
@@ -154,19 +169,22 @@ def _unwrap_response(resp: dict) -> tuple[Any, str | None]:
         return (resp.get("__result__"), None)
 
 
+_PULSING_ERROR_PREFIX = "__PULSING_ERROR__:"
+
+
 def _convert_rust_error(err: RuntimeError) -> Exception:
     """Convert Rust-raised RuntimeError to appropriate Pulsing exception.
 
-    Rust layer prefixes error messages with markers:
-    - "ACTOR_ERROR:" -> PulsingActorError (or specific subclasses)
-    - "RUNTIME_ERROR:" -> PulsingRuntimeError
+    Rust layer encodes errors as JSON envelopes with prefix "__PULSING_ERROR__:".
+    The JSON format:
+      Actor errors:  {"category": "actor", "error": {"type": "business", "code": 400, ...}}
+      Runtime errors: {"category": "runtime", "kind": "actor_not_found", "message": "...", ...}
 
-    The error message format for ActorError:
-    - "ACTOR_ERROR:Business error [code]: message" -> PulsingBusinessError
-    - "ACTOR_ERROR:System error: message" -> PulsingSystemError
-    - "ACTOR_ERROR:Timeout: operation 'op' timed out..." -> PulsingTimeoutError
-    - "ACTOR_ERROR:Unsupported operation: op" -> PulsingUnsupportedError
+    This replaces the previous regex-based string prefix parsing with
+    reliable JSON deserialization.
     """
+    import json
+
     from pulsing.exceptions import (
         PulsingBusinessError,
         PulsingSystemError,
@@ -176,51 +194,60 @@ def _convert_rust_error(err: RuntimeError) -> Exception:
 
     err_msg = str(err)
 
-    if err_msg.startswith("ACTOR_ERROR:"):
-        msg = err_msg.replace("ACTOR_ERROR:", "")
+    if not err_msg.startswith(_PULSING_ERROR_PREFIX):
+        # Not a structured Pulsing error, wrap as generic RuntimeError
+        return PulsingRuntimeError(err_msg)
 
-        # Try to identify specific ActorError type from message
-        if msg.startswith("Business error ["):
-            # Extract code, message, and details from "Business error [code]: message"
-            import re
+    json_str = err_msg[len(_PULSING_ERROR_PREFIX) :]
+    try:
+        envelope = json.loads(json_str)
+    except (json.JSONDecodeError, ValueError):
+        # JSON parse failed, fall back to generic error
+        return PulsingRuntimeError(err_msg)
 
-            match = re.match(r"Business error \[(\d+)\]: (.+)", msg)
-            if match:
-                code = int(match.group(1))
-                message = match.group(2)
-                return PulsingBusinessError(code, message)
+    category = envelope.get("category")
 
-        if msg.startswith("System error: "):
-            # Extract error message from "System error: message"
-            error_msg = msg.replace("System error: ", "")
-            # Default to recoverable=True (we don't have recoverable flag in message)
-            return PulsingSystemError(error_msg, recoverable=True)
+    if category == "actor":
+        actor_err = envelope.get("error", {})
+        err_type = actor_err.get("type")
 
-        if msg.startswith("Timeout: operation '"):
-            # Extract operation and duration from "Timeout: operation 'op' timed out after Xms"
-            import re
+        if err_type == "business":
+            code = actor_err.get("code", 0)
+            message = actor_err.get("message", "Unknown error")
+            details = actor_err.get("details")
+            return PulsingBusinessError(code, message, details=details)
 
-            match = re.match(
-                r"Timeout: operation '([^']+)' timed out after (\d+)ms", msg
-            )
-            if match:
-                operation = match.group(1)
-                duration_ms = int(match.group(2))
-                return PulsingTimeoutError(operation, duration_ms)
+        if err_type == "system":
+            error = actor_err.get("error", "Unknown error")
+            recoverable = actor_err.get("recoverable", True)
+            return PulsingSystemError(error, recoverable=recoverable)
 
-        if msg.startswith("Unsupported operation: "):
-            # Extract operation from "Unsupported operation: op"
-            operation = msg.replace("Unsupported operation: ", "")
+        if err_type == "timeout":
+            operation = actor_err.get("operation", "unknown")
+            duration_ms = actor_err.get("duration_ms", 0)
+            return PulsingTimeoutError(operation, duration_ms)
+
+        if err_type == "unsupported":
+            operation = actor_err.get("operation", "unknown")
             return PulsingUnsupportedError(operation)
 
-        # Fallback: generic PulsingActorError
-        return PulsingActorError(msg)
-    elif err_msg.startswith("RUNTIME_ERROR:"):
-        msg = err_msg.replace("RUNTIME_ERROR:", "")
-        return PulsingRuntimeError(msg)
-    else:
-        # Unknown format, wrap as RuntimeError
-        return PulsingRuntimeError(err_msg)
+        # Unknown actor error type, generic fallback
+        return PulsingActorError(str(actor_err))
+
+    if category == "runtime":
+        message = envelope.get("message", "Unknown runtime error")
+        return PulsingRuntimeError(message)
+
+    # Unknown category
+    return PulsingRuntimeError(err_msg)
+
+
+async def _ask_convert_errors(ref, msg) -> Any:
+    """Call ref.ask(msg) and convert Rust RuntimeError to Pulsing exceptions."""
+    try:
+        return await ref.ask(msg)
+    except RuntimeError as e:
+        raise _convert_rust_error(e) from e
 
 
 logger = logging.getLogger(__name__)
@@ -274,6 +301,27 @@ def get_actor_metadata(name: str) -> dict[str, str] | None:
     return _actor_metadata_registry.get(name)
 
 
+class ActorRefView:
+    """Wrapper around ActorRef that adds .as_any() for an untyped proxy.
+
+    Returned by resolve(name). Delegates .ask(), .tell(), and other
+    ActorRef attributes to the underlying ref. Use .as_any() to get
+    a proxy that forwards any method call to the remote actor.
+    """
+
+    __slots__ = ("_ref",)
+
+    def __init__(self, ref: ActorRef):
+        self._ref = ref
+
+    def as_any(self) -> "ActorProxy":
+        """Return an untyped proxy that forwards any method call to the remote actor."""
+        return ActorProxy(self._ref, method_names=None, async_methods=None)
+
+    def __getattr__(self, name: str):
+        return getattr(self._ref, name)
+
+
 PYTHON_ACTOR_SERVICE_NAME = "system/python_actor_service"
 
 
@@ -288,15 +336,21 @@ class ActorProxy:
     ):
         self._ref = actor_ref
         self._method_names = set(method_names) if method_names else None
-        self._async_methods = async_methods or set()
+        # None means "any proxy": allow any method, treat all as async (streaming support)
+        self._async_methods = async_methods
 
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(f"Cannot access private attribute: {name}")
         if self._method_names is not None and name not in self._method_names:
             raise AttributeError(f"No method '{name}'")
-        is_async = name in self._async_methods
+        # When _async_methods is None (any proxy), treat all methods as async
+        is_async = self._async_methods is None or name in self._async_methods
         return _MethodCaller(self._ref, name, is_async=is_async)
+
+    def as_any(self) -> "ActorProxy":
+        """Return an untyped proxy that forwards any method call to the remote actor."""
+        return ActorProxy(self._ref, method_names=None, async_methods=None)
 
     @property
     def ref(self) -> ActorRef:
@@ -337,7 +391,7 @@ class _MethodCaller:
         else:
             call_msg = _wrap_call_v1(self._method, args, kwargs, False)
 
-        resp = await self._ref.ask(call_msg)
+        resp = await _ask_convert_errors(self._ref, call_msg)
 
         if isinstance(resp, dict):
             result, error = _unwrap_response(resp)
@@ -397,7 +451,7 @@ class _AsyncMethodCall:
                 call_msg = _wrap_call_v2(self._method, self._args, self._kwargs, True)
             else:
                 call_msg = _wrap_call_v1(self._method, self._args, self._kwargs, True)
-            resp = await self._ref.ask(call_msg)
+            resp = await _ask_convert_errors(self._ref, call_msg)
 
             # Response may be PyMessage (streaming) or direct Python object
             if isinstance(resp, Message):
@@ -443,6 +497,11 @@ class _AsyncMethodCall:
                     )
                 if "__yield__" in item:
                     return item["__yield__"]
+                # Single-value response (non-streaming): {"__result__": value}
+                if "__result__" in item:
+                    self._final_result = item.get("__result__")
+                    self._got_result = True
+                    raise StopAsyncIteration
             return item
         except StopAsyncIteration:
             raise
@@ -497,15 +556,46 @@ class _SyncGeneratorStreamReader:
                     self._got_result = True
                     raise StopAsyncIteration
                 if "__error__" in item:
-                    # Actor execution error
-                    raise PulsingActorError(
-                        item["__error__"], actor_name=str(self._ref.actor_id.id)
-                    )
+                    raise PulsingActorError(item["__error__"])
                 if "__yield__" in item:
                     return item["__yield__"]
             return item
         except StopAsyncIteration:
             raise
+
+
+class _DelayedCallProxy:
+    """Proxy returned by ``self.delayed(sec)`` — any method call becomes a delayed message to self.
+
+    Usage inside a @remote class::
+
+        task = self.delayed(5.0).some_method(arg1, arg2)
+        task.cancel()  # cancel if needed
+
+    Returns an ``asyncio.Task`` that fires after the delay.
+    """
+
+    __slots__ = ("_ref", "_delay_sec")
+
+    def __init__(self, ref: ActorRef, delay_sec: float):
+        self._ref = ref
+        self._delay_sec = delay_sec
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def caller(*args, **kwargs):
+            msg = _wrap_call_v1(name, args, kwargs, is_async=True)
+            delay = max(0.0, self._delay_sec)
+
+            async def _send():
+                await asyncio.sleep(delay)
+                await self._ref.tell(msg)
+
+            return asyncio.create_task(_send())
+
+        return caller
 
 
 class _WrappedActor(_ActorBase):
@@ -533,6 +623,12 @@ class _WrappedActor(_ActorBase):
             return inspect.getfile(self._original_class)
         except (TypeError, OSError):
             return None
+
+    def _inject_delayed(self, actor_ref: ActorRef) -> None:
+        """Inject ``self.delayed(sec)`` on the user instance after spawn."""
+        self._instance.delayed = lambda delay_sec: _DelayedCallProxy(
+            actor_ref, delay_sec
+        )
 
     def on_start(self, actor_id) -> None:
         if hasattr(self._instance, "on_start"):
@@ -627,6 +723,25 @@ class _WrappedActor(_ActorBase):
 
         return {"__error__": f"Unknown message type: {type(msg)}"}
 
+    @staticmethod
+    async def _safe_stream_write(writer, obj: dict) -> bool:
+        """Write to stream; return False if stream already closed (e.g. caller cancelled)."""
+        try:
+            await writer.write(obj)
+            return True
+        except (RuntimeError, OSError, ConnectionError) as e:
+            if "closed" in str(e).lower() or "stream" in str(e).lower():
+                return False
+            raise
+
+    @staticmethod
+    async def _safe_stream_close(writer) -> None:
+        """Close stream; ignore if already closed."""
+        try:
+            await writer.close()
+        except (RuntimeError, OSError, ConnectionError):
+            pass
+
     def _handle_generator_result(self, gen) -> StreamMessage:
         """Handle generator result, return streaming response"""
         stream_msg, writer = StreamMessage.create("GeneratorStream")
@@ -635,17 +750,26 @@ class _WrappedActor(_ActorBase):
             try:
                 if inspect.isasyncgen(gen):
                     async for item in gen:
-                        await writer.write({"__yield__": item})
+                        if not await self._safe_stream_write(
+                            writer, {"__yield__": item}
+                        ):
+                            return
                 else:
                     for item in gen:
-                        await writer.write({"__yield__": item})
-                await writer.write({"__final__": True, "__result__": None})
+                        if not await self._safe_stream_write(
+                            writer, {"__yield__": item}
+                        ):
+                            return
+                await self._safe_stream_write(
+                    writer, {"__final__": True, "__result__": None}
+                )
             except Exception as e:
-                await writer.write({"__error__": str(e)})
+                await self._safe_stream_write(writer, {"__error__": str(e)})
             finally:
-                await writer.close()
+                await self._safe_stream_close(writer)
 
-        asyncio.create_task(execute())
+        task = asyncio.create_task(execute())
+        task.add_done_callback(_consume_task_exception)
         return stream_msg
 
     def _handle_async_method(self, func, args, kwargs) -> StreamMessage:
@@ -658,29 +782,39 @@ class _WrappedActor(_ActorBase):
 
                 # Check result type
                 if inspect.isasyncgen(result):
-                    # Async generator
                     async for item in result:
-                        await writer.write({"__yield__": item})
-                    await writer.write({"__final__": True, "__result__": None})
+                        if not await self._safe_stream_write(
+                            writer, {"__yield__": item}
+                        ):
+                            return
+                    await self._safe_stream_write(
+                        writer, {"__final__": True, "__result__": None}
+                    )
                 elif asyncio.iscoroutine(result):
-                    # Regular async function
                     final_result = await result
-                    await writer.write({"__final__": True, "__result__": final_result})
+                    await self._safe_stream_write(
+                        writer, {"__final__": True, "__result__": final_result}
+                    )
                 elif inspect.isgenerator(result):
-                    # Synchronous generator
                     for item in result:
-                        await writer.write({"__yield__": item})
-                    await writer.write({"__final__": True, "__result__": None})
+                        if not await self._safe_stream_write(
+                            writer, {"__yield__": item}
+                        ):
+                            return
+                    await self._safe_stream_write(
+                        writer, {"__final__": True, "__result__": None}
+                    )
                 else:
-                    # Regular return value
-                    await writer.write({"__final__": True, "__result__": result})
+                    await self._safe_stream_write(
+                        writer, {"__final__": True, "__result__": result}
+                    )
             except Exception as e:
-                await writer.write({"__error__": str(e)})
+                await self._safe_stream_write(writer, {"__error__": str(e)})
             finally:
-                await writer.close()
+                await self._safe_stream_close(writer)
 
-        # Execute in background task, non-blocking actor
-        asyncio.create_task(execute())
+        task = asyncio.create_task(execute())
+        task.add_done_callback(_consume_task_exception)
         return stream_msg
 
 
@@ -897,10 +1031,13 @@ class ActorClass:
             actor_name = f"actors/{self._cls.__name__}_{uuid.uuid4().hex[:8]}"
 
         if self._restart_policy != "never":
+            _wrapped_holder: list[_WrappedActor] = []
 
             def factory():
                 instance = self._cls(*args, **kwargs)
-                return _WrappedActor(instance)
+                wrapped = _WrappedActor(instance)
+                _wrapped_holder.append(wrapped)
+                return wrapped
 
             actor_ref = await system.spawn(
                 factory,
@@ -911,10 +1048,13 @@ class ActorClass:
                 min_backoff=self._min_backoff,
                 max_backoff=self._max_backoff,
             )
+            if _wrapped_holder:
+                _wrapped_holder[-1]._inject_delayed(actor_ref)
         else:
             instance = self._cls(*args, **kwargs)
             actor = _WrappedActor(instance)
             actor_ref = await system.spawn(actor, name=actor_name, public=public)
+            actor._inject_delayed(actor_ref)
 
         # Register actor metadata
         _register_actor_metadata(actor_name, self._cls)
@@ -974,7 +1114,8 @@ class ActorClass:
             actor_name = f"actors/{self._cls.__name__}_{uuid.uuid4().hex[:8]}"
 
         # Send creation request
-        resp = await service_ref.ask(
+        resp = await _ask_convert_errors(
+            service_ref,
             Message.from_json(
                 "CreateActor",
                 {
@@ -989,7 +1130,7 @@ class ActorClass:
                     "min_backoff": self._min_backoff,
                     "max_backoff": self._max_backoff,
                 },
-            )
+            ),
         )
 
         data = resp.to_json()
@@ -1144,8 +1285,9 @@ class SystemActorProxy:
 
     async def _ask(self, msg_type: str) -> dict:
         """Send SystemMessage and return response."""
-        resp = await self._ref.ask(
-            Message.from_json("SystemMessage", {"type": msg_type})
+        resp = await _ask_convert_errors(
+            self._ref,
+            Message.from_json("SystemMessage", {"type": msg_type}),
         )
         return resp.to_json()
 
@@ -1221,7 +1363,9 @@ class PythonActorServiceProxy:
         Returns:
             List of registered class names
         """
-        resp = await self._ref.ask(Message.from_json("ListRegistry", {}))
+        resp = await _ask_convert_errors(
+            self._ref, Message.from_json("ListRegistry", {})
+        )
         data = resp.to_json()
         return data.get("classes", [])
 
@@ -1256,7 +1400,8 @@ class PythonActorServiceProxy:
         Raises:
             RuntimeError: If creation fails
         """
-        resp = await self._ref.ask(
+        resp = await _ask_convert_errors(
+            self._ref,
             Message.from_json(
                 "CreateActor",
                 {
@@ -1270,7 +1415,7 @@ class PythonActorServiceProxy:
                     "min_backoff": min_backoff,
                     "max_backoff": max_backoff,
                 },
-            )
+            ),
         )
         data = resp.to_json()
         if resp.msg_type == "Error" or data.get("error"):
@@ -1339,8 +1484,11 @@ async def resolve(
     name: str,
     *,
     node_id: int | None = None,
-) -> ActorRef:
-    """Resolve a named actor by name, return ActorRef
+):
+    """Resolve a named actor by name.
+
+    Returns an object that supports .ask(), .tell(), and .as_any().
+    Use .as_any() to get an untyped proxy that forwards any method call.
 
     For typed ActorProxy with method calls, use Counter.resolve(name) instead.
 
@@ -1349,35 +1497,51 @@ async def resolve(
         node_id: Target node ID, searches in cluster if not provided
 
     Returns:
-        ActorRef: Low-level actor reference for ask/tell operations.
+        ActorRefView: Ref-like object with .as_any() for untyped proxy.
 
     Example:
         from pulsing.actor import init, remote, resolve
 
         await init()
 
-        @remote
-        class Counter:
-            def __init__(self, init=0): self.value = init
-            def increment(self): self.value += 1; return self.value
+        # By name only (no type needed)
+        ref = await resolve("channel.discord")
+        proxy = ref.as_any()
+        await proxy.send_text(chat_id, content)
 
-        # Create actor
-        counter = await Counter.spawn(name="my_counter")
-
-        # Method 1: Use typed resolve (recommended)
-        proxy = await Counter.resolve("my_counter")
-        result = await proxy.increment()
-
-        # Method 2: Use low-level resolve + ask
+        # Low-level ask
         ref = await resolve("my_counter")
-        result = await ref.ask({"method": "increment", "args": [], "kwargs": {}})
+        result = await ref.ask({"__call__": "increment", "args": [], "kwargs": {}})
     """
     from . import _global_system
 
     if _global_system is None:
         raise RuntimeError("Actor system not initialized. Call 'await init()' first.")
 
-    return await _global_system.resolve(name, node_id=node_id)
+    try:
+        ref = await _global_system.resolve(name, node_id=node_id)
+        return ActorRefView(ref)
+    except RuntimeError as e:
+        raise _convert_rust_error(e) from e
+
+
+def as_any(ref: ActorRef | ActorRefView) -> ActorProxy:
+    """Return an untyped proxy that forwards any method call to the remote actor.
+
+    Use when you have an ActorRef (or ref from resolve()) and want to call
+    methods by name without the typed class.
+
+    Args:
+        ref: ActorRef from resolve(name), or raw ActorRef from system.resolve_named().
+
+    Example:
+        ref = await resolve("channel.discord")
+        proxy = as_any(ref)  # or proxy = ref.as_any()
+        await proxy.send_text(chat_id, content)
+    """
+    if isinstance(ref, ActorRefView):
+        return ref.as_any()
+    return ActorProxy(ref, method_names=None, async_methods=None)
 
 
 RemoteClass = ActorClass

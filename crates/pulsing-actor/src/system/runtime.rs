@@ -35,10 +35,9 @@ pub(crate) async fn run_actor_instance<A: Actor>(
                                 responder.send(Ok(response));
                             }
                             Err(e) => {
-                                tracing::error!(actor_id = ?ctx.id(), error = %e, "Actor error");
-                                responder.send(Err(anyhow::anyhow!("Handler error: {}", e)));
-                                // Actor crashes on error - supervision will decide whether to restart
-                                return StopReason::Failed(e.to_string());
+                                // 业务错误：receive 返回 Err，只把错误返回给调用者，actor 继续处理下一条消息
+                                tracing::warn!(actor_id = ?ctx.id(), error = %e, "Receive returned error (returned to caller)");
+                                responder.send(Err(e));
                             }
                         }
                     }
@@ -77,7 +76,7 @@ pub(crate) async fn run_supervision_loop<F, A>(
     spec: SupervisionSpec,
 ) -> StopReason
 where
-    F: FnMut() -> anyhow::Result<A> + Send + 'static,
+    F: FnMut() -> crate::error::Result<A> + Send + 'static,
     A: Actor,
 {
     let mut restarts = 0;

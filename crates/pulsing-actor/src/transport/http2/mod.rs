@@ -7,12 +7,14 @@ mod retry;
 mod server;
 mod stream;
 
-use crate::error::RuntimeError;
+use crate::error::{PulsingError, Result, RuntimeError};
 
 #[cfg(feature = "tls")]
 mod tls;
 
-pub use client::{Http2Client, Http2ClientBuilder};
+pub use client::{
+    FaultInjectContext, FaultInjectOperation, FaultInjector, Http2Client, Http2ClientBuilder,
+};
 pub use config::Http2Config;
 pub use pool::{ConnectionPool, PoolConfig, PoolStats};
 pub use retry::{RetryConfig, RetryExecutor, RetryableError};
@@ -42,7 +44,7 @@ impl Http2Transport {
         handler: Arc<dyn Http2ServerHandler>,
         config: Http2Config,
         cancel: CancellationToken,
-    ) -> anyhow::Result<(Arc<Self>, SocketAddr)> {
+    ) -> crate::error::Result<(Arc<Self>, SocketAddr)> {
         let client = Arc::new(Http2Client::new(config.clone()));
         client.start_background_tasks();
 
@@ -79,12 +81,7 @@ impl Http2Transport {
     }
 
     /// Send a request to an actor and wait for response.
-    pub async fn ask(
-        &self,
-        addr: SocketAddr,
-        actor_name: &str,
-        msg: Message,
-    ) -> anyhow::Result<Message> {
+    pub async fn ask(&self, addr: SocketAddr, actor_name: &str, msg: Message) -> Result<Message> {
         let path = format!("/actors/{}", actor_name);
         self.client.send_message_full(addr, &path, msg).await
     }
@@ -95,17 +92,12 @@ impl Http2Transport {
         addr: SocketAddr,
         path: &ActorPath,
         msg: Message,
-    ) -> anyhow::Result<Message> {
+    ) -> Result<Message> {
         let url_path = format!("/named/{}", path.as_str());
         self.client.send_message_full(addr, &url_path, msg).await
     }
 
-    pub async fn tell(
-        &self,
-        addr: SocketAddr,
-        actor_name: &str,
-        msg: Message,
-    ) -> anyhow::Result<()> {
+    pub async fn tell(&self, addr: SocketAddr, actor_name: &str, msg: Message) -> Result<()> {
         let path = format!("/actors/{}", actor_name);
         let Message::Single { msg_type, data } = msg else {
             return Err(RuntimeError::protocol_error("Streaming not supported for tell").into());
@@ -114,12 +106,7 @@ impl Http2Transport {
         self.client.tell(addr, &path, &msg_type, data).await
     }
 
-    pub async fn tell_named(
-        &self,
-        addr: SocketAddr,
-        path: &ActorPath,
-        msg: Message,
-    ) -> anyhow::Result<()> {
+    pub async fn tell_named(&self, addr: SocketAddr, path: &ActorPath, msg: Message) -> Result<()> {
         let url_path = format!("/named/{}", path.as_str());
         let Message::Single { msg_type, data } = msg else {
             return Err(RuntimeError::protocol_error("Streaming not supported for tell").into());
@@ -129,11 +116,7 @@ impl Http2Transport {
     }
 
     /// Send a gossip message
-    pub async fn send_gossip(
-        &self,
-        addr: SocketAddr,
-        payload: Vec<u8>,
-    ) -> anyhow::Result<Option<Vec<u8>>> {
+    pub async fn send_gossip(&self, addr: SocketAddr, payload: Vec<u8>) -> Result<Option<Vec<u8>>> {
         let response = self
             .client
             .ask(addr, "/cluster/gossip", "gossip", payload)
@@ -349,87 +332,67 @@ impl RemoteTransport for Http2RemoteTransport {
         _actor_id: &ActorId,
         msg_type: &str,
         payload: Vec<u8>,
-    ) -> anyhow::Result<Vec<u8>> {
-        // Check circuit breaker before making request
+    ) -> Result<Vec<u8>> {
         if !self.circuit_breaker.can_execute() {
-            return Err(RuntimeError::ConnectionFailed {
+            return Err(PulsingError::from(RuntimeError::ConnectionFailed {
                 addr: self.remote_addr.to_string(),
                 reason: "Circuit breaker is open".to_string(),
-            }
-            .into());
+            }));
         }
 
         let result = self
             .client
             .ask(self.remote_addr, &self.path, msg_type, payload)
-            .await;
+            .await
+            .map_err(|e| PulsingError::from(RuntimeError::Other(e.to_string())));
 
-        // Record outcome in circuit breaker
         self.circuit_breaker.record_outcome(result.is_ok());
         result
     }
 
-    async fn send(
-        &self,
-        _actor_id: &ActorId,
-        msg_type: &str,
-        payload: Vec<u8>,
-    ) -> anyhow::Result<()> {
-        // Check circuit breaker before making request
+    async fn send(&self, _actor_id: &ActorId, msg_type: &str, payload: Vec<u8>) -> Result<()> {
         if !self.circuit_breaker.can_execute() {
-            return Err(RuntimeError::ConnectionFailed {
+            return Err(PulsingError::from(RuntimeError::ConnectionFailed {
                 addr: self.remote_addr.to_string(),
                 reason: "Circuit breaker is open".to_string(),
-            }
-            .into());
+            }));
         }
 
         let result = self
             .client
             .tell(self.remote_addr, &self.path, msg_type, payload)
-            .await;
+            .await
+            .map_err(|e| PulsingError::from(RuntimeError::Other(e.to_string())));
 
-        // Record outcome in circuit breaker
         self.circuit_breaker.record_outcome(result.is_ok());
         result
     }
 
     /// Send a message and receive response (unified interface)
-    ///
-    /// This method is the primary way ActorRef communicates with remote actors.
-    /// It automatically handles both:
-    /// - Single and streaming requests (based on Message type)
-    /// - Single and streaming responses (based on server's response type header)
-    async fn send_message(&self, _actor_id: &ActorId, msg: Message) -> anyhow::Result<Message> {
-        // Check circuit breaker before making request
+    async fn send_message(&self, _actor_id: &ActorId, msg: Message) -> Result<Message> {
         if !self.circuit_breaker.can_execute() {
-            return Err(RuntimeError::ConnectionFailed {
+            return Err(PulsingError::from(RuntimeError::ConnectionFailed {
                 addr: self.remote_addr.to_string(),
                 reason: "Circuit breaker is open".to_string(),
-            }
-            .into());
+            }));
         }
 
-        // Use unified send_message_full that handles both single and streaming
         let result = self
             .client
             .send_message_full(self.remote_addr, &self.path, msg)
-            .await;
+            .await
+            .map_err(|e| PulsingError::from(RuntimeError::Other(e.to_string())));
 
-        // Record outcome in circuit breaker
         self.circuit_breaker.record_outcome(result.is_ok());
         result
     }
 
     /// Send a one-way message (unified interface)
-    ///
-    /// Note: Streaming requests are NOT supported for fire-and-forget messages
-    /// because there's no way to know when the stream is fully consumed.
-    async fn send_oneway(&self, actor_id: &ActorId, msg: Message) -> anyhow::Result<()> {
+    async fn send_oneway(&self, actor_id: &ActorId, msg: Message) -> Result<()> {
         let Message::Single { msg_type, data } = msg else {
-            return Err(anyhow::anyhow!(
-                "Streaming not supported for fire-and-forget (use ask pattern instead)"
-            ));
+            return Err(PulsingError::from(RuntimeError::Other(
+                "Streaming not supported for fire-and-forget (use ask pattern instead)".into(),
+            )));
         };
         self.send(actor_id, &msg_type, data).await
     }

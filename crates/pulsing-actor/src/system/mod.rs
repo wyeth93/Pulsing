@@ -5,12 +5,79 @@
 //! - [`SystemConfig`] - Configuration for the actor system
 //! - [`SpawnOptions`] - Options for spawning actors
 //! - [`ResolveOptions`] - Options for resolving named actors
+//!
+//! # Examples
+//!
+//! ## Creating a Standalone System
+//!
+//! For single-node development and testing:
+//!
+//! ```no_run
+//! use pulsing_actor::prelude::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> anyhow::Result<()> {
+//! // Create a standalone system (no network)
+//! let system = ActorSystem::new(SystemConfig::standalone()).await?;
+//!
+//! // The system is ready to spawn actors
+//! println!("System started on node: {}", system.node_id());
+//!
+//! // Clean shutdown when done
+//! system.shutdown().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Creating a Cluster Node
+//!
+//! For production multi-node deployment:
+//!
+//! ```no_run
+//! use pulsing_actor::prelude::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> anyhow::Result<()> {
+//! // Seed node (first node in cluster)
+//! let addr: std::net::SocketAddr = "0.0.0.0:8000".parse()?;
+//! let config = SystemConfig::with_addr(addr);
+//! let seed_system = ActorSystem::new(config).await?;
+//!
+//! // Worker node joining the cluster
+//! let addr: std::net::SocketAddr = "0.0.0.0:8001".parse()?;
+//! let seed: std::net::SocketAddr = "127.0.0.1:8000".parse()?;
+//! let config = SystemConfig::with_addr(addr)
+//!     .with_seeds(vec![seed]);
+//! let worker_system = ActorSystem::new(config).await?;
+//!
+//! println!("Cluster formed with 2 nodes");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Listing Local Actors
+//!
+//! ```no_run
+//! use pulsing_actor::prelude::*;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> anyhow::Result<()> {
+//! # let system = ActorSystem::new(SystemConfig::standalone()).await?;
+//! // Get all named actors in this system
+//! let names = system.local_actor_names();
+//! for name in names {
+//!     println!("Actor: {}", name);
+//! }
+//! # Ok(())
+//! # }
+//! ```
 
 mod config;
 mod handle;
 mod handler;
 mod lifecycle;
 mod load_balancer;
+pub mod registry;
 mod resolve;
 mod runtime;
 mod spawn;
@@ -21,16 +88,16 @@ pub use config::{
 };
 pub use handle::ActorStats;
 pub use load_balancer::NodeLoadTracker;
+pub use registry::ActorRegistry;
 pub use traits::{ActorSystemCoreExt, ActorSystemOpsExt};
 
 use crate::actor::{ActorId, ActorPath, ActorRef, ActorResolver, ActorSystemRef, Envelope, NodeId};
 use crate::cluster::{GossipBackend, HeadNodeBackend, NamingBackend};
+use crate::error::{PulsingError, Result, RuntimeError};
 use crate::policies::{LoadBalancingPolicy, RoundRobinPolicy};
 use crate::system_actor::{BoxedActorFactory, SystemActor, SystemRef, SYSTEM_ACTOR_PATH};
 use crate::transport::Http2Transport;
-use crate::watch::ActorLifecycle;
 use dashmap::DashMap;
-use handle::LocalActorHandle;
 use handler::SystemMessageHandler;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -38,7 +105,10 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-/// The Actor System - manages actors and cluster membership
+/// The Actor System - manages actors and cluster membership.
+///
+/// Actor management (spawn, name lookup, lifecycle) is delegated to
+/// [`ActorRegistry`]. Transport, cluster, and load balancing remain here.
 pub struct ActorSystem {
     /// Local node ID
     pub(crate) node_id: NodeId,
@@ -49,14 +119,8 @@ pub struct ActorSystem {
     /// Default mailbox capacity for actors
     pub(crate) default_mailbox_capacity: usize,
 
-    /// Local actors indexed by ActorId (O(1) lookup by ActorId)
-    pub(crate) local_actors: Arc<DashMap<ActorId, LocalActorHandle>>,
-
-    /// Actor name to ActorId mapping (for name-based lookups)
-    pub(crate) actor_names: Arc<DashMap<String, ActorId>>,
-
-    /// Named actor path to local actor name mapping (path_string -> actor_name)
-    pub(crate) named_actor_paths: Arc<DashMap<String, String>>,
+    /// Actor registry: manages local actors, names, paths, lifecycle
+    pub(crate) registry: Arc<ActorRegistry>,
 
     /// Naming backend (for discovery)
     pub(crate) cluster: Arc<RwLock<Option<Arc<dyn NamingBackend>>>>,
@@ -66,9 +130,6 @@ pub struct ActorSystem {
 
     /// Cancellation token
     pub(crate) cancel_token: CancellationToken,
-
-    /// Actor lifecycle manager (watch, termination handling)
-    pub(crate) lifecycle: Arc<ActorLifecycle>,
 
     /// Default load balancing policy
     pub(crate) default_lb_policy: Arc<dyn LoadBalancingPolicy>,
@@ -90,24 +151,15 @@ impl ActorSystem {
     }
 
     /// Create a new actor system
-    pub async fn new(config: SystemConfig) -> anyhow::Result<Arc<Self>> {
+    pub async fn new(config: SystemConfig) -> Result<Arc<Self>> {
         let cancel_token = CancellationToken::new();
         let node_id = NodeId::generate();
-        let local_actors: Arc<DashMap<ActorId, LocalActorHandle>> = Arc::new(DashMap::new());
-        let actor_names: Arc<DashMap<String, ActorId>> = Arc::new(DashMap::new());
-        let named_actor_paths: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
+        let registry = Arc::new(ActorRegistry::new());
         let cluster_holder: Arc<RwLock<Option<Arc<dyn NamingBackend>>>> =
             Arc::new(RwLock::new(None));
-        let lifecycle = Arc::new(ActorLifecycle::new());
 
-        // Create message handler (needs cluster reference for gossip)
-        let handler = SystemMessageHandler::new(
-            node_id,
-            local_actors.clone(),
-            actor_names.clone(),
-            named_actor_paths.clone(),
-            cluster_holder.clone(),
-        );
+        // Create message handler (needs registry and cluster reference)
+        let handler = SystemMessageHandler::new(node_id, registry.clone(), cluster_holder.clone());
 
         // Clone http2_config before moving it to transport
         let http2_config_for_backend = config.http2_config.clone();
@@ -165,13 +217,10 @@ impl ActorSystem {
             node_id,
             addr: actual_addr,
             default_mailbox_capacity: config.default_mailbox_capacity,
-            local_actors,
-            actor_names,
-            named_actor_paths,
+            registry,
             cluster: cluster_holder,
             transport,
             cancel_token,
-            lifecycle,
             default_lb_policy: Arc::new(RoundRobinPolicy::new()),
             node_load: Arc::new(DashMap::new()),
         });
@@ -183,20 +232,25 @@ impl ActorSystem {
     }
 
     /// Start SystemActor (internal, called during system creation)
-    async fn start_system_actor(self: &Arc<Self>) -> anyhow::Result<()> {
+    async fn start_system_actor(self: &Arc<Self>) -> Result<()> {
         // Create senders snapshot for SystemRef
         let local_actor_senders: Arc<DashMap<String, mpsc::Sender<Envelope>>> =
             Arc::new(DashMap::new());
-        for entry in self.local_actors.iter() {
+        for entry in self.registry.iter_actors() {
             // Find name for this actor (reverse lookup from actor_names)
-            if let Some(name_entry) = self.actor_names.iter().find(|e| *e.value() == *entry.key()) {
+            if let Some(name_entry) = self
+                .registry
+                .actor_names
+                .iter()
+                .find(|e| *e.value() == *entry.key())
+            {
                 local_actor_senders.insert(name_entry.key().clone(), entry.sender.clone());
             }
         }
 
         // Create named_actor_paths snapshot
         let named_actor_paths: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
-        for entry in self.named_actor_paths.iter() {
+        for entry in self.registry.iter_named_paths() {
             named_actor_paths.insert(entry.key().clone(), entry.value().clone());
         }
 
@@ -229,18 +283,24 @@ impl ActorSystem {
     pub async fn start_system_actor_with_factory(
         self: &Arc<Self>,
         factory: BoxedActorFactory,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         // Check if already started
-        if self.actor_names.contains_key(SYSTEM_ACTOR_PATH) {
-            return Err(anyhow::anyhow!("SystemActor already started"));
+        if self.registry.has_name(SYSTEM_ACTOR_PATH) {
+            return Err(PulsingError::from(RuntimeError::Other(
+                "SystemActor already started".into(),
+            )));
         }
 
-        // Create SystemRef
+        // Create SystemRef (snapshot of named paths)
+        let named_paths_snapshot: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
+        for entry in self.registry.iter_named_paths() {
+            named_paths_snapshot.insert(entry.key().clone(), entry.value().clone());
+        }
         let system_ref = Arc::new(SystemRef {
             node_id: self.node_id,
             addr: self.addr,
             local_actors: Arc::new(DashMap::new()), // Will be updated
-            named_actor_paths: self.named_actor_paths.clone(),
+            named_actor_paths: named_paths_snapshot,
         });
 
         // Create SystemActor with custom factory
@@ -261,7 +321,7 @@ impl ActorSystem {
     }
 
     /// Get SystemActor reference
-    pub async fn system(&self) -> anyhow::Result<ActorRef> {
+    pub async fn system(&self) -> Result<ActorRef> {
         self.resolve_named(&ActorPath::new_system(SYSTEM_ACTOR_PATH)?, None)
             .await
     }
@@ -278,7 +338,7 @@ impl ActorSystem {
 
     /// Get list of local actor names
     pub fn local_actor_names(&self) -> Vec<String> {
-        self.actor_names.iter().map(|e| e.key().clone()).collect()
+        self.registry.actor_names_list()
     }
 
     /// Get a local actor reference by name
@@ -286,17 +346,13 @@ impl ActorSystem {
     /// Returns None if the actor doesn't exist locally.
     /// This is an O(1) operation.
     pub fn local_actor_ref_by_name(&self, name: &str) -> Option<ActorRef> {
-        self.actor_names.get(name).and_then(|local_id| {
-            self.local_actors
-                .get(local_id.value())
-                .map(|handle| ActorRef::local(handle.actor_id, handle.sender.clone()))
-        })
+        self.registry.local_actor_ref_by_name(name)
     }
 }
 
 #[async_trait::async_trait]
 impl ActorSystemRef for ActorSystem {
-    async fn actor_ref(&self, id: &ActorId) -> anyhow::Result<ActorRef> {
+    async fn actor_ref(&self, id: &ActorId) -> Result<ActorRef> {
         ActorSystem::actor_ref(self, id).await
     }
 
@@ -304,21 +360,21 @@ impl ActorSystemRef for ActorSystem {
         self.node_id
     }
 
-    async fn watch(&self, watcher: &ActorId, target: &ActorId) -> anyhow::Result<()> {
+    async fn watch(&self, watcher: &ActorId, target: &ActorId) -> Result<()> {
         // Check if target is a local actor
-        if !self.local_actors.contains_key(target) {
-            return Err(anyhow::anyhow!(
+        if self.registry.get_handle(target).is_none() {
+            return Err(PulsingError::from(RuntimeError::Other(format!(
                 "Cannot watch remote actor: {} (watching remote actors not yet supported)",
                 target
-            ));
+            ))));
         }
 
-        self.lifecycle.watch(watcher, target).await;
+        self.registry.lifecycle.watch(watcher, target).await;
         Ok(())
     }
 
-    async fn unwatch(&self, watcher: &ActorId, target: &ActorId) -> anyhow::Result<()> {
-        self.lifecycle.unwatch(watcher, target).await;
+    async fn unwatch(&self, watcher: &ActorId, target: &ActorId) -> Result<()> {
+        self.registry.lifecycle.unwatch(watcher, target).await;
         Ok(())
     }
 
@@ -332,7 +388,7 @@ impl ActorSystemRef for ActorSystem {
 /// This enables lazy ActorRef to resolve named actors on demand.
 #[async_trait::async_trait]
 impl ActorResolver for ActorSystem {
-    async fn resolve_path(&self, path: &ActorPath) -> anyhow::Result<ActorRef> {
+    async fn resolve_path(&self, path: &ActorPath) -> Result<ActorRef> {
         // Use direct resolution (not lazy) to avoid infinite recursion
         self.resolve_named_direct(path, None).await
     }

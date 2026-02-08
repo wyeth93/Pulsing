@@ -4,6 +4,7 @@
 //! for graceful lifecycle management.
 
 use crate::actor::{ActorPath, StopReason};
+use crate::error::Result;
 use crate::system::ActorSystem;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -17,7 +18,7 @@ impl ActorSystem {
     /// This method first signals the actor to stop via its cancellation token,
     /// waits for it to finish (with timeout), then performs cleanup.
     /// If the actor doesn't stop within the timeout, it will be forcefully aborted.
-    pub async fn stop(&self, name: impl AsRef<str>) -> anyhow::Result<()> {
+    pub async fn stop(&self, name: impl AsRef<str>) -> Result<()> {
         self.stop_with_reason(name, StopReason::Killed).await
     }
 
@@ -25,18 +26,14 @@ impl ActorSystem {
     ///
     /// Note: If the name doesn't contain a "/" and no actor is found with the exact name,
     /// it will try with the "actors/" prefix (for Python compatibility).
-    pub async fn stop_with_reason(
-        &self,
-        name: impl AsRef<str>,
-        reason: StopReason,
-    ) -> anyhow::Result<()> {
+    pub async fn stop_with_reason(&self, name: impl AsRef<str>, reason: StopReason) -> Result<()> {
         let name = name.as_ref();
 
-        let actual_name = if self.actor_names.contains_key(name) {
+        let actual_name = if self.registry.has_name(name) {
             name.to_string()
         } else if !name.contains('/') {
             let prefixed = format!("actors/{}", name);
-            if self.actor_names.contains_key(&prefixed) {
+            if self.registry.has_name(&prefixed) {
                 prefixed
             } else {
                 name.to_string()
@@ -45,8 +42,8 @@ impl ActorSystem {
             name.to_string()
         };
 
-        if let Some((_, local_id)) = self.actor_names.remove(&actual_name) {
-            if let Some((_, handle)) = self.local_actors.remove(&local_id) {
+        if let Some((_, local_id)) = self.registry.remove_by_name(&actual_name) {
+            if let Some((_, handle)) = self.registry.remove_handle(&local_id) {
                 let named_path = handle.named_path.clone();
                 self.stop_local_actor(
                     &actual_name,
@@ -63,7 +60,7 @@ impl ActorSystem {
     }
 
     /// Stop a named actor by path
-    pub async fn stop_named(&self, path: &crate::actor::ActorPath) -> anyhow::Result<()> {
+    pub async fn stop_named(&self, path: &crate::actor::ActorPath) -> Result<()> {
         self.stop_named_with_reason(path, StopReason::Killed).await
     }
 
@@ -72,15 +69,12 @@ impl ActorSystem {
         &self,
         path: &crate::actor::ActorPath,
         reason: StopReason,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let path_key = path.as_str();
 
-        if let Some(actor_name_ref) = self.named_actor_paths.get(&path_key) {
-            let actor_name = actor_name_ref.clone();
-            drop(actor_name_ref);
-
-            if let Some((_, local_id)) = self.actor_names.remove(&actor_name) {
-                if let Some((_, handle)) = self.local_actors.remove(&local_id) {
+        if let Some(actor_name) = self.registry.get_actor_name_by_path(&path_key) {
+            if let Some((_, local_id)) = self.registry.remove_by_name(&actor_name) {
+                if let Some((_, handle)) = self.registry.remove_handle(&local_id) {
                     self.stop_local_actor(
                         &actor_name,
                         handle,
@@ -98,7 +92,7 @@ impl ActorSystem {
 
     /// Shutdown the entire actor system
     ///
-    pub async fn shutdown(&self) -> anyhow::Result<()> {
+    pub async fn shutdown(&self) -> Result<()> {
         tracing::info!("Shutting down actor system");
 
         self.cancel_token.cancel();
@@ -106,13 +100,14 @@ impl ActorSystem {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let actor_entries: Vec<_> = self
-            .local_actors
-            .iter()
+            .registry
+            .iter_actors()
             .map(|entry| {
                 let local_id = *entry.key();
                 let actor_id = entry.actor_id;
                 let named_path = entry.named_path.clone();
                 let name = self
+                    .registry
                     .actor_names
                     .iter()
                     .find(|e| *e.value() == local_id)
@@ -123,9 +118,9 @@ impl ActorSystem {
             .collect();
 
         for (local_id, _actor_id, actor_name, named_path) in actor_entries {
-            self.actor_names.remove(&actor_name);
+            self.registry.remove_by_name(&actor_name);
 
-            if let Some((_, handle)) = self.local_actors.remove(&local_id) {
+            if let Some((_, handle)) = self.registry.remove_handle(&local_id) {
                 self.stop_local_actor(
                     &actor_name,
                     handle,
@@ -137,12 +132,11 @@ impl ActorSystem {
             }
         }
 
-        self.local_actors.clear();
-        self.actor_names.clear();
+        self.registry.clear();
 
         self.node_load.clear();
 
-        self.lifecycle.clear().await;
+        self.registry.clear_lifecycle().await;
 
         {
             let cluster_guard = self.cluster.read().await;
@@ -201,17 +195,18 @@ impl ActorSystem {
         }
 
         // 3. Handle lifecycle cleanup
-        let local_actors = self.local_actors.clone();
-        self.lifecycle
+        let registry = self.registry.clone();
+        self.registry
+            .lifecycle
             .handle_termination(
                 &handle.actor_id,
                 named_path,
                 reason,
-                &self.named_actor_paths,
+                &registry.named_actor_paths,
                 &self.cluster,
                 |actor_id| {
                     // Directly lookup by ActorId
-                    local_actors.get(actor_id).map(|h| h.sender.clone())
+                    registry.get_handle(actor_id).map(|h| h.sender.clone())
                 },
             )
             .await;

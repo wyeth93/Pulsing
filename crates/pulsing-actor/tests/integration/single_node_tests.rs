@@ -1,6 +1,7 @@
 //! Integration tests for the complete actor system
 
 use pulsing_actor::actor::{ActorAddress, ActorPath};
+use pulsing_actor::error::{PulsingError, RuntimeError};
 use pulsing_actor::prelude::*;
 use pulsing_actor::ActorSystemOpsExt;
 use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
@@ -44,7 +45,11 @@ struct EchoActor {
 
 #[async_trait]
 impl Actor for EchoActor {
-    async fn receive(&mut self, msg: Message, _ctx: &mut ActorContext) -> anyhow::Result<Message> {
+    async fn receive(
+        &mut self,
+        msg: Message,
+        _ctx: &mut ActorContext,
+    ) -> pulsing_actor::error::Result<Message> {
         if msg.msg_type().ends_with("Ping") {
             let ping: Ping = msg.unpack()?;
             self.echo_count.fetch_add(1, Ordering::SeqCst);
@@ -52,7 +57,9 @@ impl Actor for EchoActor {
                 result: ping.value * 2,
             });
         }
-        Err(anyhow::anyhow!("Unknown message"))
+        Err(PulsingError::from(RuntimeError::Other(
+            "Unknown message".into(),
+        )))
     }
 }
 
@@ -62,7 +69,11 @@ struct Accumulator {
 
 #[async_trait]
 impl Actor for Accumulator {
-    async fn receive(&mut self, msg: Message, _ctx: &mut ActorContext) -> anyhow::Result<Message> {
+    async fn receive(
+        &mut self,
+        msg: Message,
+        _ctx: &mut ActorContext,
+    ) -> pulsing_actor::error::Result<Message> {
         let msg_type = msg.msg_type();
         if msg_type.ends_with("Accumulate") {
             let acc: Accumulate = msg.unpack()?;
@@ -72,7 +83,9 @@ impl Actor for Accumulator {
         if msg_type.ends_with("GetTotal") {
             return Message::pack(&TotalResponse { total: self.total });
         }
-        Err(anyhow::anyhow!("Unknown message"))
+        Err(PulsingError::from(RuntimeError::Other(
+            "Unknown message".into(),
+        )))
     }
 }
 
@@ -80,7 +93,7 @@ impl Actor for Accumulator {
 // Single Node Integration Tests
 // ============================================================================
 
-mod single_node_tests {
+mod single_node {
     use super::*;
 
     #[tokio::test]
@@ -333,16 +346,20 @@ mod error_tests {
             &mut self,
             msg: Message,
             _ctx: &mut ActorContext,
-        ) -> anyhow::Result<Message> {
+        ) -> pulsing_actor::error::Result<Message> {
             if msg.msg_type().ends_with("CrashMessage") {
                 self.crash_count.fetch_add(1, Ordering::SeqCst);
-                return Err(anyhow::anyhow!("Intentional crash!"));
+                return Err(PulsingError::from(RuntimeError::Other(
+                    "Intentional crash!".into(),
+                )));
             }
             if msg.msg_type().ends_with("Ping") {
                 let ping: Ping = msg.unpack()?;
                 return Message::pack(&Pong { result: ping.value });
             }
-            Err(anyhow::anyhow!("Unknown message"))
+            Err(PulsingError::from(RuntimeError::Other(
+                "Unknown message".into(),
+            )))
         }
     }
 
@@ -361,16 +378,18 @@ mod error_tests {
             .await
             .unwrap();
 
-        // Send crash message
+        // receive 返回 Err 时只把错误返回给调用者，actor 不退出
         let result: Result<Pong, _> = actor_ref.ask(CrashMessage).await;
         assert!(result.is_err());
         assert_eq!(crash_count.load(Ordering::SeqCst), 1);
 
-        // With supervision model, errors cause actor to crash (unless supervision is configured)
-        // So subsequent messages should fail
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        // Actor 仍存活，后续消息应正常处理
         let result2: Result<Pong, _> = actor_ref.ask(Ping { value: 42 }).await;
-        assert!(result2.is_err(), "Actor should be dead after error");
+        assert!(
+            result2.is_ok(),
+            "Actor should still be alive after receive error"
+        );
+        assert_eq!(result2.unwrap().result, 42);
 
         system.shutdown().await.unwrap();
     }
@@ -390,17 +409,14 @@ mod error_tests {
             .await
             .unwrap();
 
-        // First crash message crashes the actor
-        let _: Result<Pong, _> = actor_ref.ask(CrashMessage).await;
+        // receive 返回 Err 时只把错误返回给调用者，actor 不退出
+        let r1: Result<Pong, _> = actor_ref.ask(CrashMessage).await;
+        assert!(r1.is_err());
         assert_eq!(crash_count.load(Ordering::SeqCst), 1);
 
-        // Actor is now dead - subsequent messages fail with mailbox closed
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        let result: Result<Pong, _> = actor_ref.ask(CrashMessage).await;
-        assert!(result.is_err(), "Actor should be dead after first error");
-
-        // Counter doesn't increment because actor is dead
-        assert_eq!(crash_count.load(Ordering::SeqCst), 1);
+        let r2: Result<Pong, _> = actor_ref.ask(CrashMessage).await;
+        assert!(r2.is_err());
+        assert_eq!(crash_count.load(Ordering::SeqCst), 2);
 
         system.shutdown().await.unwrap();
     }
@@ -443,12 +459,12 @@ mod lifecycle_tests {
 
     #[async_trait]
     impl Actor for LifecycleTracker {
-        async fn on_start(&mut self, _ctx: &mut ActorContext) -> anyhow::Result<()> {
+        async fn on_start(&mut self, _ctx: &mut ActorContext) -> pulsing_actor::error::Result<()> {
             self.events.lock().await.push("started".to_string());
             Ok(())
         }
 
-        async fn on_stop(&mut self, _ctx: &mut ActorContext) -> anyhow::Result<()> {
+        async fn on_stop(&mut self, _ctx: &mut ActorContext) -> pulsing_actor::error::Result<()> {
             self.events.lock().await.push("stopped".to_string());
             Ok(())
         }
@@ -457,7 +473,7 @@ mod lifecycle_tests {
             &mut self,
             msg: Message,
             _ctx: &mut ActorContext,
-        ) -> anyhow::Result<Message> {
+        ) -> pulsing_actor::error::Result<Message> {
             self.events
                 .lock()
                 .await

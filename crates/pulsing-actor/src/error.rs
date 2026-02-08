@@ -15,6 +15,49 @@
 //!     - Timeout errors (operation timeouts)
 //!     - Unsupported errors (unsupported operations)
 //!       → Maps to Python: PulsingActorError (and subclasses)
+//!
+//! # Examples
+//!
+//! ## Error Classification
+//!
+//! ```
+//! use pulsing_actor::error::{PulsingError, RuntimeError, ActorError};
+//!
+//! // Create a runtime error
+//! let err = PulsingError::from(RuntimeError::ActorNotFound {
+//!     name: "my_actor".into(),
+//! });
+//!
+//! assert!(err.is_runtime());
+//! assert!(!err.is_actor());
+//!
+//! // Create an actor error
+//! let actor_err = PulsingError::from(ActorError::Timeout {
+//!     operation: "ask".into(),
+//!     duration_ms: 30000,
+//! });
+//!
+//! assert!(!actor_err.is_runtime());
+//! assert!(actor_err.is_actor());
+//! ```
+//!
+//! ## Converting Errors
+//!
+//! ```
+//! use pulsing_actor::error::{PulsingError, RuntimeError};
+//!
+//! fn do_something() -> Result<(), PulsingError> {
+//!     // Automatic conversion from RuntimeError
+//!     Err(RuntimeError::ActorNotFound {
+//!         name: "test".into(),
+//!     }.into())
+//! }
+//!
+//! match do_something() {
+//!     Err(e) => println!("Error: {}", e),
+//!     Ok(_) => unreachable!(),
+//! }
+//! ```
 
 use thiserror::Error;
 
@@ -47,25 +90,7 @@ impl PulsingError {
     }
 }
 
-impl From<anyhow::Error> for PulsingError {
-    fn from(err: anyhow::Error) -> Self {
-        // Try to downcast to known error types
-        if let Some(runtime_err) = err.downcast_ref::<RuntimeError>() {
-            return Self::Runtime(runtime_err.clone());
-        }
-        if let Some(actor_err) = err.downcast_ref::<ActorError>() {
-            return Self::Actor(actor_err.clone());
-        }
-        // Try to downcast to PulsingError itself
-        if let Some(pulsing_err) = err.downcast_ref::<PulsingError>() {
-            return pulsing_err.clone();
-        }
-        // Default to runtime error for unknown errors
-        Self::Runtime(RuntimeError::Other(err.to_string()))
-    }
-}
-
-// Implement Clone for PulsingError to support downcast
+// Implement Clone for PulsingError
 impl Clone for PulsingError {
     fn clone(&self) -> Self {
         match self {
@@ -276,6 +301,20 @@ impl RuntimeError {
         Self::RequestTimeout { timeout_ms }
     }
 
+    /// Create a connection closed error
+    pub fn connection_closed(reason: impl Into<String>) -> Self {
+        Self::ConnectionClosed {
+            reason: reason.into(),
+        }
+    }
+
+    /// Create an invalid response error
+    pub fn invalid_response(reason: impl Into<String>) -> Self {
+        Self::InvalidResponse {
+            reason: reason.into(),
+        }
+    }
+
     /// Create a TLS error
     pub fn tls_error(reason: impl Into<String>) -> Self {
         Self::TlsError {
@@ -372,6 +411,51 @@ impl RuntimeError {
     /// Create an I/O error from std::io::Error
     pub fn io(err: std::io::Error) -> Self {
         Self::Io(err.to_string())
+    }
+
+    /// Get the error kind as a snake_case string (for structured serialization)
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ActorNotFound { .. } => "actor_not_found",
+            Self::ActorAlreadyExists { .. } => "actor_already_exists",
+            Self::ActorNotLocal { .. } => "actor_not_local",
+            Self::ActorStopped { .. } => "actor_stopped",
+            Self::ActorMailboxFull { .. } => "actor_mailbox_full",
+            Self::InvalidActorPath { .. } => "invalid_actor_path",
+            Self::MessageTypeMismatch { .. } => "message_type_mismatch",
+            Self::ActorSpawnFailed { .. } => "actor_spawn_failed",
+            Self::ConnectionFailed { .. } => "connection_failed",
+            Self::ConnectionClosed { .. } => "connection_closed",
+            Self::RequestTimeout { .. } => "request_timeout",
+            Self::InvalidResponse { .. } => "invalid_response",
+            Self::TlsError { .. } => "tls_error",
+            Self::ProtocolError { .. } => "protocol_error",
+            Self::ClusterNotInitialized => "cluster_not_initialized",
+            Self::NodeNotFound { .. } => "node_not_found",
+            Self::NamedActorNotFound { .. } => "named_actor_not_found",
+            Self::NoHealthyInstances { .. } => "no_healthy_instances",
+            Self::JoinFailed { .. } => "join_failed",
+            Self::GossipError { .. } => "gossip_error",
+            Self::InvalidConfigValue { .. } => "invalid_config_value",
+            Self::MissingRequiredConfig { .. } => "missing_required_config",
+            Self::ConflictingConfig { .. } => "conflicting_config",
+            Self::InvalidAddress { .. } => "invalid_address",
+            Self::Io(_) => "io_error",
+            Self::Serialization(_) => "serialization_error",
+            Self::Other(_) => "other",
+        }
+    }
+
+    /// Extract actor name if this error is related to a specific actor
+    pub fn actor_name(&self) -> Option<&str> {
+        match self {
+            Self::ActorNotFound { name } => Some(name),
+            Self::ActorAlreadyExists { name } => Some(name),
+            Self::ActorNotLocal { name } => Some(name),
+            Self::ActorStopped { name } => Some(name),
+            Self::ActorMailboxFull { name } => Some(name),
+            _ => None,
+        }
     }
 }
 
@@ -499,6 +583,7 @@ pub type Result<T> = std::result::Result<T, PulsingError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
 
     #[test]
     fn test_runtime_error_display() {
@@ -561,5 +646,79 @@ mod tests {
 
         assert_eq!(err1, err2);
         assert_ne!(err1, err3);
+    }
+
+    #[test]
+    fn test_runtime_error_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let runtime_err: RuntimeError = io_err.into();
+        assert!(matches!(runtime_err, RuntimeError::Io(_)));
+        assert!(runtime_err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_runtime_error_kind_and_actor_name() {
+        let err = RuntimeError::actor_not_found("my-actor");
+        assert_eq!(err.kind(), "actor_not_found");
+        assert_eq!(err.actor_name(), Some("my-actor"));
+
+        let err = RuntimeError::Other("generic".to_string());
+        assert_eq!(err.kind(), "other");
+        assert_eq!(err.actor_name(), None);
+    }
+
+    #[test]
+    fn test_pulsing_error_is_runtime_is_actor() {
+        let runtime_err = PulsingError::from(RuntimeError::actor_not_found("x"));
+        assert!(runtime_err.is_runtime());
+        assert!(!runtime_err.is_actor());
+
+        let actor_err = PulsingError::from(ActorError::business(400, "y", None));
+        assert!(!actor_err.is_runtime());
+        assert!(actor_err.is_actor());
+    }
+
+    /// Test error propagation with ? operator
+    fn propagate_result(ok: bool) -> Result<()> {
+        if ok {
+            Ok(())
+        } else {
+            Err(RuntimeError::actor_not_found("test").into())
+        }
+    }
+
+    #[test]
+    fn test_error_propagation() {
+        assert!(propagate_result(true).is_ok());
+        let err = propagate_result(false).unwrap_err();
+        assert!(err.is_runtime());
+        assert!(err.to_string().contains("test"));
+    }
+
+    #[test]
+    fn test_runtime_error_resolve_helpers() {
+        let err = RuntimeError::no_healthy_instances("svc/echo");
+        assert_eq!(err.kind(), "no_healthy_instances");
+        assert!(err.to_string().to_lowercase().contains("svc/echo"));
+
+        let err = RuntimeError::node_not_found("node-42");
+        assert_eq!(err.kind(), "node_not_found");
+        assert!(err.to_string().contains("node-42"));
+
+        let err = RuntimeError::named_actor_not_found("a/b");
+        assert_eq!(err.kind(), "named_actor_not_found");
+        assert!(err.to_string().contains("a/b"));
+
+        let err = RuntimeError::ClusterNotInitialized;
+        assert_eq!(err.kind(), "cluster_not_initialized");
+        assert!(err.to_string().to_lowercase().contains("cluster"));
+    }
+
+    #[test]
+    fn test_error_source_chain() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        let runtime_err: RuntimeError = io_err.into();
+        let pulsing_err: PulsingError = runtime_err.into();
+        assert!(pulsing_err.source().is_some());
     }
 }

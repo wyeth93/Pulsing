@@ -8,6 +8,7 @@
 
 use crate::actor::{NodeId, DEFAULT_MAILBOX_SIZE};
 use crate::cluster::{GossipConfig, HeadNodeConfig};
+use crate::error::{PulsingError, Result, RuntimeError};
 use crate::policies::LoadBalancingPolicy;
 use crate::supervision::SupervisionSpec;
 use crate::transport::Http2Config;
@@ -109,8 +110,11 @@ impl SystemConfig {
     /// The passphrase is used to derive a shared CA certificate, enabling
     /// automatic mutual TLS authentication.
     #[cfg(feature = "tls")]
-    pub fn with_tls(mut self, passphrase: &str) -> anyhow::Result<Self> {
-        self.http2_config = self.http2_config.with_tls(passphrase)?;
+    pub fn with_tls(mut self, passphrase: &str) -> Result<Self> {
+        self.http2_config = self
+            .http2_config
+            .with_tls(passphrase)
+            .map_err(|e| PulsingError::from(RuntimeError::Other(e.to_string())))?;
         Ok(self)
     }
 
@@ -227,9 +231,9 @@ impl std::error::Error for ConfigValidationError {}
 #[derive(Default)]
 pub struct ActorSystemBuilder {
     /// Bind address (stored as Result for deferred error handling)
-    addr: Option<Result<SocketAddr, String>>,
+    addr: Option<std::result::Result<SocketAddr, String>>,
     /// Seed nodes (stored as Results for deferred error handling)
-    seeds: Vec<Result<SocketAddr, String>>,
+    seeds: Vec<std::result::Result<SocketAddr, String>>,
     /// Mailbox capacity
     mailbox_capacity: Option<usize>,
     /// Gossip configuration
@@ -239,7 +243,7 @@ pub struct ActorSystemBuilder {
     /// Head node mode
     is_head_node: bool,
     /// Head node address (if set, makes this a worker)
-    head_addr: Option<Result<SocketAddr, String>>,
+    head_addr: Option<std::result::Result<SocketAddr, String>>,
     /// Head node configuration
     head_node_config: Option<HeadNodeConfig>,
 }
@@ -271,12 +275,13 @@ impl ActorSystemBuilder {
 
     /// Enable TLS with passphrase
     #[cfg(feature = "tls")]
-    pub fn tls(mut self, passphrase: &str) -> anyhow::Result<Self> {
+    pub fn tls(mut self, passphrase: &str) -> Result<Self> {
         let http2_config = self
             .http2_config
             .take()
             .unwrap_or_default()
-            .with_tls(passphrase)?;
+            .with_tls(passphrase)
+            .map_err(|e| PulsingError::from(RuntimeError::Other(e.to_string())))?;
         self.http2_config = Some(http2_config);
         Ok(self)
     }
@@ -313,7 +318,7 @@ impl ActorSystemBuilder {
     /// Build the ActorSystem
     ///
     /// Returns an error if any address parsing or validation failed.
-    pub async fn build(self) -> anyhow::Result<Arc<crate::system::ActorSystem>> {
+    pub async fn build(self) -> crate::error::Result<Arc<crate::system::ActorSystem>> {
         let addr =
             Self::parse_optional_addr("bind address", self.addr)?.unwrap_or(DEFAULT_BIND_ADDR);
 
@@ -339,46 +344,47 @@ impl ActorSystemBuilder {
 
     fn parse_optional_addr(
         label: &str,
-        input: Option<Result<SocketAddr, String>>,
-    ) -> anyhow::Result<Option<SocketAddr>> {
+        input: Option<std::result::Result<SocketAddr, String>>,
+    ) -> Result<Option<SocketAddr>> {
         match input {
             Some(Ok(addr)) => Ok(Some(addr)),
-            Some(Err(invalid)) => Err(anyhow::anyhow!("Invalid {}: {}", label, invalid)),
+            Some(Err(invalid)) => Err(PulsingError::from(RuntimeError::Other(format!(
+                "Invalid {}: {}",
+                label, invalid
+            )))),
             None => Ok(None),
         }
     }
 
     fn parse_addr_list(
         label: &str,
-        seeds: Vec<Result<SocketAddr, String>>,
-    ) -> anyhow::Result<Vec<SocketAddr>> {
+        seeds: Vec<std::result::Result<SocketAddr, String>>,
+    ) -> Result<Vec<SocketAddr>> {
         let mut addrs = Vec::with_capacity(seeds.len());
         for (i, seed) in seeds.into_iter().enumerate() {
             match seed {
                 Ok(addr) => addrs.push(addr),
                 Err(invalid) => {
-                    return Err(anyhow::anyhow!(
+                    return Err(PulsingError::from(RuntimeError::Other(format!(
                         "Invalid {} at index {}: {}",
-                        label,
-                        i,
-                        invalid
-                    ));
+                        label, i, invalid
+                    ))));
                 }
             }
         }
         Ok(addrs)
     }
 
-    fn validate_config(config: &SystemConfig) -> anyhow::Result<()> {
+    fn validate_config(config: &SystemConfig) -> Result<()> {
         let errors = config.validate();
         if errors.is_empty() {
             return Ok(());
         }
         let error_msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
-        Err(anyhow::anyhow!(
+        Err(PulsingError::from(RuntimeError::Other(format!(
             "Configuration validation failed:\n  - {}",
             error_msgs.join("\n  - ")
-        ))
+        ))))
     }
 }
 
@@ -509,10 +515,118 @@ mod tests {
         let err = ConfigValidationError::ConflictingHeadNodeConfig;
         assert!(err.to_string().contains("head_node"));
     }
+
+    // --- 配置解析 ---
+
+    #[test]
+    fn test_config_with_seeds() {
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let config = SystemConfig::standalone().with_seeds(vec![addr]);
+        assert_eq!(config.seed_nodes.len(), 1);
+        assert_eq!(config.seed_nodes[0], addr);
+    }
+
+    #[test]
+    fn test_config_with_head_node_and_head_addr() {
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let config = SystemConfig::standalone().with_head_node();
+        assert!(config.is_head_node);
+        assert!(config.head_addr.is_none());
+
+        let config = SystemConfig::standalone().with_head_addr(addr);
+        assert!(!config.is_head_node);
+        assert_eq!(config.head_addr, Some(addr));
+    }
+
+    #[tokio::test]
+    async fn test_builder_invalid_addr_parse() {
+        let result = ActorSystemBuilder::default()
+            .addr("not-a-valid-address")
+            .build()
+            .await;
+        let err = match result {
+            Ok(_) => panic!("expected build to fail"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().to_lowercase().contains("invalid"));
+    }
+
+    #[tokio::test]
+    async fn test_builder_invalid_seed_parse() {
+        let result = ActorSystemBuilder::default()
+            .seeds(vec!["127.0.0.1:0", "invalid-seed"])
+            .build()
+            .await;
+        let err = match result {
+            Ok(_) => panic!("expected build to fail"),
+            Err(e) => e,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid") && msg.contains("index"));
+    }
+
+    #[tokio::test]
+    async fn test_builder_validation_mailbox_too_small() {
+        let result = ActorSystemBuilder::default()
+            .addr("127.0.0.1:0")
+            .mailbox_capacity(1)
+            .build()
+            .await;
+        let err = match result {
+            Ok(_) => panic!("expected validation to fail"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().to_lowercase().contains("mailbox"));
+    }
+
+    #[tokio::test]
+    async fn test_builder_validation_mailbox_too_large() {
+        let result = ActorSystemBuilder::default()
+            .addr("127.0.0.1:0")
+            .mailbox_capacity(10_000_000)
+            .build()
+            .await;
+        let err = match result {
+            Ok(_) => panic!("expected validation to fail"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().to_lowercase().contains("mailbox"));
+    }
+
+    #[test]
+    fn test_validation_multiple_errors() {
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let config = SystemConfig {
+            default_mailbox_capacity: 1,
+            is_head_node: true,
+            head_addr: Some(addr),
+            ..Default::default()
+        };
+        let errors = config.validate();
+        assert_eq!(errors.len(), 2);
+        let has_mailbox = errors
+            .iter()
+            .any(|e| matches!(e, ConfigValidationError::MailboxTooSmall { .. }));
+        let has_conflict = errors
+            .iter()
+            .any(|e| matches!(e, ConfigValidationError::ConflictingHeadNodeConfig));
+        assert!(has_mailbox);
+        assert!(has_conflict);
+    }
+
+    #[tokio::test]
+    async fn test_builder_valid_build() {
+        let result = ActorSystemBuilder::default()
+            .addr("127.0.0.1:0")
+            .build()
+            .await;
+        let system = result.unwrap();
+        system.shutdown().await.unwrap();
+    }
 }
 
 /// Helper type for flexible address input (defers parsing errors)
-pub struct AddrInput(Result<SocketAddr, String>);
+pub struct AddrInput(std::result::Result<SocketAddr, String>);
 
 impl From<SocketAddr> for AddrInput {
     fn from(addr: SocketAddr) -> Self {
