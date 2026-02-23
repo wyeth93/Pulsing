@@ -1823,7 +1823,7 @@ dependencies = [
 
 [[package]]
 name = "pulsing-actor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "pulsing-bench-py"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pulsing-bench",
  "pyo3",
@@ -1901,7 +1901,7 @@ dependencies = [
 
 [[package]]
 name = "pulsing-py"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
