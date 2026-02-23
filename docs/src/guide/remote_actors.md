@@ -1,6 +1,20 @@
 # Remote Actors Guide
 
-Guide to using actors across a cluster with location transparency.
+Guide to running and discovering actors across a cluster: setup, named actors, resolve.
+
+## Before / After: Single Node vs Cluster
+
+**Same Actor code.** Only initialization and how you get a reference change.
+
+| | Single node (standalone) | Cluster (two nodes) |
+|---|--------------------------|----------------------|
+| **Init** | `await pul.init()` | Node 1: `await pul.init(addr="0.0.0.0:8000")`<br/>Node 2: `await pul.init(addr="0.0.0.0:8001", seeds=["127.0.0.1:8000"])` |
+| **Get actor** | `await Counter.spawn(value=0)` | Node 1: `await Counter.spawn(value=0, name="counter")`<br/>Node 2: `await Counter.resolve("counter")` |
+| **Call** | `await counter.inc()` | Same: `await counter.inc()` — location transparent |
+
+Once you have a proxy (from `spawn` or `resolve`), the API is identical. No “remote” vs “local” branches in your logic.
+
+---
 
 ## Cluster Setup
 
@@ -37,6 +51,10 @@ await asyncio.sleep(1.0)
 # Find actor by name (searches entire cluster)
 remote_ref = await system.resolve("worker")
 response = await remote_ref.ask({"action": "process", "data": "hello"})
+
+# Convert ActorRef to proxy
+any_proxy = remote_ref.as_any()         # Unspecified/unknown type
+typed_proxy = remote_ref.as_type(Worker)  # Typed proxy when class is known
 ```
 
 ### Using @remote Class.resolve()
@@ -50,6 +68,9 @@ class Worker:
 worker = await Worker.resolve("worker")
 result = await worker.process("hello")  # Direct method call
 ```
+
+!!! note
+    For new code, prefer `Class.resolve(name)` (typed proxy). Use `system.resolve(name)` when you only have a runtime name and then call `.as_type()` / `.as_any()` on the returned `ActorRef`.
 
 ## Named vs Anonymous Actors
 
@@ -151,7 +172,7 @@ except PulsingRuntimeError as e:
 Use timeouts for remote calls to avoid indefinite waits:
 
 ```python
-from pulsing.actor import ask_with_timeout
+from pulsing.core import ask_with_timeout
 
 try:
     response = await ask_with_timeout(remote_ref, msg, timeout=10.0)

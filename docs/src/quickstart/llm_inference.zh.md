@@ -2,6 +2,16 @@
 
 10 分钟内用 Pulsing 构建一个**可扩展的 LLM 推理后端**。
 
+**前后对比：**
+
+| | 之前（单进程或临时脚本） | 之后（Pulsing） |
+|---|--------------------------|-----------------|
+| **API** | 自建 HTTP 或仅进程内 | OpenAI 兼容 HTTP API（`/v1/chat/completions`） |
+| **扩展** | 单进程、单模型 | Router + N 个 Worker；按需增加节点与 Worker |
+| **流式** | 若有则手写 | Router 到客户端的原生流式 |
+
+你会得到一个 **Router**（HTTP API + 负载均衡）和若干 **Worker**（模型后端）。同一套 Actor 模型；增加 Worker 或节点无需改客户端代码。
+
 **你将构建：**
 
 - 一个暴露 **OpenAI 兼容 HTTP API** 的 Router
@@ -43,7 +53,7 @@ pip install pulsing
 打开**终端 A**：
 
 ```bash
-pulsing actor pulsing.actors.Router \
+pulsing actor pulsing.serving.Router \
   --addr 0.0.0.0:8000 \
   --http_port 8080 \
   --model_name my-llm
@@ -64,7 +74,7 @@ pulsing actor pulsing.actors.Router \
 === "Transformers (CPU)"
 
     ```bash
-    pulsing actor pulsing.actors.TransformersWorker \
+    pulsing actor pulsing.serving.TransformersWorker \
       --model_name gpt2 \
       --device cpu \
       --addr 0.0.0.0:8001 \
@@ -74,7 +84,7 @@ pulsing actor pulsing.actors.Router \
 === "vLLM (GPU)"
 
     ```bash
-    pulsing actor pulsing.actors.VllmWorker \
+    pulsing actor pulsing.serving.VllmWorker \
       --model Qwen/Qwen2.5-0.5B \
       --addr 0.0.0.0:8002 \
       --seeds 127.0.0.1:8000
@@ -135,10 +145,10 @@ curl -N http://localhost:8080/v1/chat/completions \
 
 ```bash
 # 终端 C
-pulsing actor pulsing.actors.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8003 --seeds 127.0.0.1:8000
+pulsing actor pulsing.serving.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8003 --seeds 127.0.0.1:8000
 
 # 终端 D
-pulsing actor pulsing.actors.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8004 --seeds 127.0.0.1:8000
+pulsing actor pulsing.serving.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8004 --seeds 127.0.0.1:8000
 ```
 
 Router 会自动在所有 Worker 间负载均衡。

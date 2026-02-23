@@ -5,7 +5,7 @@ import hyperparameter as hp
 
 @hp.param("actor")
 def actor(
-    actor_type: str,  # Positional argument: full class path (e.g., 'pulsing.actors.worker.TransformersWorker')
+    actor_type: str,  # Positional argument: full class path (e.g., 'pulsing.serving.worker.TransformersWorker')
     addr: str | None = None,
     seeds: str | None = None,
     name: str = "worker",  # Actor name (default: "worker")
@@ -18,9 +18,9 @@ def actor(
 
     Actor type must be a full class path:
     - Format: 'module.path.ClassName'
-    - Example: 'pulsing.actors.Router'
-    - Example: 'pulsing.actors.TransformersWorker'
-    - Example: 'pulsing.actors.VllmWorker'
+    - Example: 'pulsing.serving.Router'
+    - Example: 'pulsing.serving.TransformersWorker'
+    - Example: 'pulsing.serving.VllmWorker'
     - Example: 'my_module.my_actor.MyCustomActor'
 
     Pass constructor parameters directly as command-line arguments.
@@ -29,7 +29,7 @@ def actor(
     Note: To list actors, use 'pulsing inspect actors' instead.
 
     Args:
-        actor_type: Full class path (positional argument), e.g., 'pulsing.actors.worker.TransformersWorker'
+        actor_type: Full class path (positional argument), e.g., 'pulsing.serving.worker.TransformersWorker'
         addr: Actor System bind address (e.g., '0.0.0.0:8000')
         seeds: Comma-separated list of seed nodes (e.g., '192.168.1.1:8000,192.168.1.2:8000')
         name: Actor name. Default: 'worker'. Use different names to run multiple workers in the same cluster.
@@ -38,17 +38,17 @@ def actor(
 
     Examples:
         # Start a Transformers worker
-        pulsing actor pulsing.actors.TransformersWorker --model_name gpt2 --device cpu --name my-worker
+        pulsing actor pulsing.serving.TransformersWorker --model_name gpt2 --device cpu --name my-worker
 
         # Start a vLLM worker
-        pulsing actor pulsing.actors.VllmWorker --model Qwen/Qwen2 --role aggregated --max_new_tokens 512 --name vllm-worker
+        pulsing actor pulsing.serving.VllmWorker --model Qwen/Qwen2 --role aggregated --max_new_tokens 512 --name vllm-worker
 
         # Start a Router with OpenAI-compatible API
-        pulsing actor pulsing.actors.Router --http_host 0.0.0.0 --http_port 8080 --model_name my-llm --worker_name worker
+        pulsing actor pulsing.serving.Router --http_host 0.0.0.0 --http_port 8080 --model_name my-llm --worker_name worker
 
         # Start multiple workers with different names
-        pulsing actor pulsing.actors.TransformersWorker --model_name gpt2 --name worker-1 --seeds 127.0.0.1:8000
-        pulsing actor pulsing.actors.TransformersWorker --model_name gpt2 --name worker-2 --seeds 127.0.0.1:8000
+        pulsing actor pulsing.serving.TransformersWorker --model_name gpt2 --name worker-1 --seeds 127.0.0.1:8000
+        pulsing actor pulsing.serving.TransformersWorker --model_name gpt2 --name worker-2 --seeds 127.0.0.1:8000
     """
     from .actors import start_generic_actor
 
@@ -63,9 +63,9 @@ def actor(
     # Check if actor_type is a valid class path (must contain dots)
     if "." not in actor_type:
         raise ValueError(
-            f"Error: Actor type must be a full class path (e.g., 'pulsing.actors.worker.TransformersWorker').\n"
+            f"Error: Actor type must be a full class path (e.g., 'pulsing.serving.worker.TransformersWorker').\n"
             f"Received: '{actor_type}'\n"
-            f"Example: pulsing actor pulsing.actors.worker.TransformersWorker --model_name gpt2"
+            f"Example: pulsing actor pulsing.serving.worker.TransformersWorker --model_name gpt2"
         )
 
     # Parse seeds
@@ -257,7 +257,67 @@ def bench(
     )
 
 
+@hp.param("examples")
+def examples(name: str | None = None):
+    """
+    List or view Pulsing built-in examples.
+
+    Lists all available examples when called without arguments;
+    shows detailed description, usage, and source path when given a name.
+
+    Args:
+        name: Example name (optional). If omitted, lists all examples.
+
+    Examples:
+        # List all examples
+        pulsing examples
+
+        # View details of a specific example
+        pulsing examples counting_game
+    """
+    from pulsing.examples import get_example_detail, list_examples
+
+    if name is None:
+        all_examples = list_examples()
+        if not all_examples:
+            print("No examples available.")
+            return
+        print("Available examples:\n")
+        max_name_len = max(len(n) for n, _, _ in all_examples)
+        for n, summary, filepath in all_examples:
+            print(f"  {n:<{max_name_len}}  {summary}")
+        print("\nUse 'pulsing examples <name>' for details.")
+        return
+
+    detail = get_example_detail(name)
+    if detail is None:
+        print(f"Unknown example: '{name}'")
+        print("Use 'pulsing examples' to see all available examples.")
+        return
+
+    summary, docstring, filepath = detail
+    print(f"{'=' * 60}")
+    print(f"  {summary}")
+    print(f"{'=' * 60}\n")
+    if docstring:
+        print(docstring)
+        print()
+    print(f"Source path:\n  {filepath}\n")
+    print(f"Quick run:\n  python -m pulsing.examples.{name}")
+
+
 def main():
+    import sys
+
+    # Make `pulsing examples <name>` work with positional arguments
+    # hp framework treats params with default values as --name options, so we convert here
+    if (
+        len(sys.argv) >= 3
+        and sys.argv[1] == "examples"
+        and not sys.argv[2].startswith("-")
+    ):
+        sys.argv = [sys.argv[0], "examples", "--name", sys.argv[2]] + sys.argv[3:]
+
     hp.launch()
 
 

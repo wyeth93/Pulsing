@@ -1,6 +1,20 @@
 # 远程 Actor 指南
 
-在集群中使用 Actor 的指南，支持位置透明。
+在集群中运行与发现 Actor 的指南：集群搭建、命名 Actor、resolve。
+
+## 前后对比：单节点 vs 集群
+
+**同一套 Actor 代码。** 只有初始化以及获取引用的方式不同。
+
+| | 单节点（独立） | 集群（两节点） |
+|---|----------------|----------------|
+| **初始化** | `await pul.init()` | 节点 1：`await pul.init(addr="0.0.0.0:8000")`<br/>节点 2：`await pul.init(addr="0.0.0.0:8001", seeds=["127.0.0.1:8000"])` |
+| **获取 Actor** | `await Counter.spawn(value=0)` | 节点 1：`await Counter.spawn(value=0, name="counter")`<br/>节点 2：`await Counter.resolve("counter")` |
+| **调用** | `await counter.inc()` | 相同：`await counter.inc()` — 位置透明 |
+
+一旦拿到 proxy（来自 `spawn` 或 `resolve`），API 完全一致，业务逻辑无需区分“远程”和“本地”。
+
+---
 
 ## 集群设置
 
@@ -37,6 +51,10 @@ await asyncio.sleep(1.0)
 # 按名称查找 actor（搜索整个集群）
 remote_ref = await system.resolve("worker")
 response = await remote_ref.ask({"action": "process", "data": "hello"})
+
+# 将 ActorRef 转换为代理
+any_proxy = remote_ref.as_any()           # 未知类型时使用
+typed_proxy = remote_ref.as_type(Worker)  # 已知类型时使用
 ```
 
 ### 使用 @remote 类的 resolve()
@@ -50,6 +68,9 @@ class Worker:
 worker = await Worker.resolve("worker")
 result = await worker.process("hello")  # 直接调用方法
 ```
+
+!!! note
+    新代码优先使用 `Class.resolve(name)`（typed proxy）。仅在只有运行时名称时使用 `system.resolve(name)`，随后对返回的 `ActorRef` 调用 `.as_type()` / `.as_any()`。
 
 ## 命名 vs 匿名 Actor
 
@@ -151,7 +172,7 @@ except PulsingRuntimeError as e:
 为远程调用使用超时，避免无限等待：
 
 ```python
-from pulsing.actor import ask_with_timeout
+from pulsing.core import ask_with_timeout
 
 try:
     response = await ask_with_timeout(remote_ref, msg, timeout=10.0)

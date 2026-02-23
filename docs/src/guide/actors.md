@@ -57,14 +57,9 @@ Pulsing follows the **classical Actor model** (like Erlang/Akka):
 
 ---
 
-## Two API Styles
+## Python API
 
-| API | Import | Style | Best For |
-|-----|--------|-------|----------|
-| **Native Async** | `import pulsing as pul` | `async/await` | New projects, maximum performance |
-| **Ray-Compatible** | `from pulsing.compat import ray` | Synchronous | Migrating from Ray, quick prototyping |
-
-### Native Async API (Recommended)
+### Global Async API
 
 ```python
 import pulsing as pul
@@ -83,34 +78,6 @@ async def main():
     calc = await Calculator.spawn(initial_value=100)
     result = await calc.add(50)  # 150
     await pul.shutdown()
-```
-
-### Ray-Compatible API
-
-```python
-from pulsing.compat import ray
-
-ray.init()
-
-@ray.remote
-class Calculator:
-    def __init__(self, initial_value: int = 0):
-        self.value = initial_value
-
-    def add(self, n: int) -> int:
-        self.value += n
-        return self.value
-
-calc = Calculator.remote(initial_value=100)
-result = ray.get(calc.add.remote(50))  # 150
-ray.shutdown()
-```
-
-**Migration from Ray** — just change the import:
-
-```python
-# Before:  import ray
-# After:   from pulsing.compat import ray
 ```
 
 ---
@@ -353,14 +320,7 @@ class ResilientActor:
 ```python
 import pulsing as pul
 
-# Create system
-system = await pul.actor_system()
-
-# Spawn named actor (discoverable via resolve)
-actor = await system.spawn(MyActor(), name="my_actor")
-
-# Call method
-result = await actor.ask({"action": "do_something"})
+await pul.init()
 
 # Using @pul.remote decorator (recommended)
 @pul.remote
@@ -374,7 +334,7 @@ result = await service.process("hello")
 proxy = await MyService.resolve("service")
 
 # Shutdown
-await system.shutdown()
+await pul.shutdown()
 ```
 
 ---

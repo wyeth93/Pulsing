@@ -1,24 +1,7 @@
 """
 Pulsing - Distributed Actor Framework
 
-Two API styles:
-
-1. Actor System style (explicit system management):
-    import pulsing as pul
-
-    system = await pul.actor_system()
-
-    @pul.remote
-    class Counter:
-        def __init__(self, init=0): self.value = init
-        def incr(self): self.value += 1; return self.value
-
-    counter = await Counter.spawn(name="counter")
-    result = await counter.incr()
-
-    await system.shutdown()
-
-2. Ray-style async API (global system):
+Usage:
     import pulsing as pul
 
     await pul.init()
@@ -32,25 +15,6 @@ Two API styles:
     result = await counter.incr()
 
     await pul.shutdown()
-
-3. Ray-compatible sync API (for migration):
-    from pulsing.compat import ray
-
-    ray.init()
-
-    @ray.remote
-    class Counter:
-        def __init__(self, init=0): self.value = init
-        def incr(self): self.value += 1; return self.value
-
-    counter = Counter.remote(init=10)
-    result = ray.get(counter.incr.remote())
-
-    ray.shutdown()
-
-Submodules:
-- pulsing.actor: Native async API (recommended)
-- pulsing.compat.ray: Ray-compatible sync API (for migration)
 """
 
 import asyncio
@@ -58,8 +22,8 @@ from typing import Any
 
 __version__ = "0.1.0"
 
-# Import from pulsing.actor
-from pulsing.actor import (
+# Import from pulsing.core
+from pulsing.core import (
     # Global system functions
     init,
     shutdown,
@@ -70,11 +34,13 @@ from pulsing.actor import (
     # Resolve function
     resolve,
     as_any,
+    # Mount (attach existing object to Pulsing network)
+    mount,
+    unmount,
     # Types
     Actor,
     ActorSystem as _ActorSystem,
     ActorRef,
-    ActorRefView,
     ActorId,
     ActorProxy,
     Message,
@@ -84,6 +50,27 @@ from pulsing.actor import (
     PythonActorService,
     PYTHON_ACTOR_SERVICE_NAME,
 )
+
+
+# Ray integration (lazy import — only available in Ray environment)
+def init_inside_ray():
+    """Initialize Pulsing in Ray worker and join cluster (async version).
+
+    Usage::
+
+        await pul.init_inside_ray()
+    """
+    from pulsing.integrations.ray import async_init_in_ray
+
+    return async_init_in_ray()
+
+
+def cleanup_ray():
+    """Clean up Pulsing state in Ray KV store"""
+    from pulsing.integrations.ray import cleanup
+
+    return cleanup()
+
 
 # Import exceptions
 from pulsing.exceptions import (
@@ -98,17 +85,18 @@ from pulsing.exceptions import (
 
 
 class ActorSystem:
-    """ActorSystem wrapper with queue API
+    """ActorSystem wrapper with queue/topic API
 
     This wraps the Rust ActorSystem and adds Python-level extensions
-    like the queue API.
+    like queue and topic APIs.
     """
 
     def __init__(self, inner: _ActorSystem):
         self._inner = inner
-        from pulsing.queue import QueueAPI
+        from pulsing.streaming import QueueAPI, TopicAPI
 
         self.queue = QueueAPI(inner)
+        self.topic = TopicAPI(inner)
 
     async def refer(self, actorid: ActorId | str) -> ActorRef:
         """Get actor reference by ID
@@ -263,6 +251,42 @@ async def refer(actorid: ActorId | str) -> ActorRef:
     return await system.refer(actorid)
 
 
+class _GlobalQueueAPI:
+    """Lazy proxy for pul.queue that uses the global system."""
+
+    async def write(self, topic, **kwargs):
+        """Open queue for writing. See QueueAPI.write() for args."""
+        from pulsing.streaming import QueueAPI
+
+        return await QueueAPI(get_system()).write(topic, **kwargs)
+
+    async def read(self, topic, **kwargs):
+        """Open queue for reading. See QueueAPI.read() for args."""
+        from pulsing.streaming import QueueAPI
+
+        return await QueueAPI(get_system()).read(topic, **kwargs)
+
+
+class _GlobalTopicAPI:
+    """Lazy proxy for pul.topic that uses the global system."""
+
+    async def write(self, topic, **kwargs):
+        """Open topic for writing. See TopicAPI.write() for args."""
+        from pulsing.streaming import TopicAPI
+
+        return await TopicAPI(get_system()).write(topic, **kwargs)
+
+    async def read(self, topic, **kwargs):
+        """Open topic for reading. See TopicAPI.read() for args."""
+        from pulsing.streaming import TopicAPI
+
+        return await TopicAPI(get_system()).read(topic, **kwargs)
+
+
+queue = _GlobalQueueAPI()
+topic = _GlobalTopicAPI()
+
+
 # Export all public APIs
 __all__ = [
     # Version
@@ -280,11 +304,19 @@ __all__ = [
     "is_initialized",
     # Decorator
     "remote",
+    # Mount (attach existing object to Pulsing network)
+    "mount",
+    "unmount",
+    # Queue & Topic (global entry points)
+    "queue",
+    "topic",
+    # Ray integration
+    "init_inside_ray",
+    "cleanup_ray",
     # Types
     "Actor",
     "ActorSystem",
     "ActorRef",
-    "ActorRefView",
     "ActorId",
     "ActorProxy",
     "Message",

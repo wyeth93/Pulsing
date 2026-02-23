@@ -24,16 +24,12 @@ pip install -e .
 
 ## Actor 模块
 
-::: pulsing.actor
+::: pulsing.core
 
 ## Agent 模块
 
 ::: pulsing.agent
 
-## 兼容性模块
-
-::: pulsing.compat
-
 ## 队列模块
 
-::: pulsing.queue
+::: pulsing.streaming

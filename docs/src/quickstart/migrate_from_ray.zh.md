@@ -1,138 +1,84 @@
-# 教程：从 Ray 迁移
+# 教程：Ray + Pulsing
 
-**5 分钟**内用 Pulsing 替换 Ray。一行导入改动，零外部依赖。
-
----
-
-## 为什么迁移？
-
-| | Ray | Pulsing |
-|---|-----|---------|
-| **依赖** | Ray 集群、Redis、GCS | 无 |
-| **启动时间** | 秒级 | 毫秒级 |
-| **内存开销** | 高 | 低 |
-| **Actor 模型** | 带状态的远程对象 | 经典模型（邮箱、FIFO） |
-| **流式消息** | 手动实现 | 原生支持 |
+用 Pulsing 作为 Ray Actor 的通信骨干——增加流式、Actor 发现和跨集群调用能力，无需替换 Ray。
 
 ---
 
-## 步骤 1：修改导入
+## 两种使用方式
 
-```python
-# 之前 (Ray)
-import ray
-
-# 之后 (Pulsing)
-from pulsing.compat import ray
-```
-
-**完成了。** 现有代码直接可用。
+1. **桥接模式** — 保留 Ray Actor，通过 `pul.mount()` 接入 Pulsing 通信
+2. **独立模式** — 直接使用 Pulsing 原生 API（适合新项目或完全迁移）
 
 ---
 
-## 步骤 2：运行代码
+## 桥接模式：为 Ray Actor 增加 Pulsing 通信
 
-### 之前 (Ray)
+最简单的路径——Ray 负责调度，Pulsing 负责通信：
 
 ```python
 import ray
-
-ray.init()
-
-@ray.remote
-class Counter:
-    def __init__(self):
-        self.value = 0
-
-    def inc(self):
-        self.value += 1
-        return self.value
-
-counter = Counter.remote()
-print(ray.get(counter.inc.remote()))  # 1
-print(ray.get(counter.inc.remote()))  # 2
-
-ray.shutdown()
-```
-
-### 之后 (Pulsing)
-
-```python
-from pulsing.compat import ray  # ← 只改了这一行
-
-ray.init()
-
-@ray.remote
-class Counter:
-    def __init__(self):
-        self.value = 0
-
-    def inc(self):
-        self.value += 1
-        return self.value
-
-counter = Counter.remote()
-print(ray.get(counter.inc.remote()))  # 1
-print(ray.get(counter.inc.remote()))  # 2
-
-ray.shutdown()
-```
-
----
-
-## 支持的 API
-
-| API | 状态 |
-|-----|------|
-| `ray.init()` | ✅ |
-| `ray.shutdown()` | ✅ |
-| `@ray.remote` (类) | ✅ |
-| `@ray.remote` (函数) | ✅ |
-| `ray.get()` | ✅ |
-| `ray.put()` | ✅ |
-| `ray.wait()` | ✅ |
-| `ActorClass.remote()` | ✅ |
-| `actor.method.remote()` | ✅ |
-
----
-
-## 分布式模式
-
-Ray 需要集群。Pulsing 只需要 `--addr` 和 `--seeds`：
-
-### 节点 1（种子）
-
-```python
-from pulsing.compat import ray
-
-ray.init(address="0.0.0.0:8000")
+import pulsing as pul
 
 @ray.remote
 class Worker:
-    def process(self, data):
-        return f"processed: {data}"
+    def __init__(self, name):
+        pul.mount(self, name=name)  # 一行代码：接入 Pulsing 网络
 
-worker = Worker.remote()
-# 保持运行...
+    async def call_peer(self, peer_name, msg):
+        proxy = (await pul.resolve(peer_name, timeout=30)).as_any()
+        return await proxy.greet(msg)  # 跨进程 Pulsing 调用
+
+    async def greet(self, msg):
+        return f"hello: {msg}"
+
+ray.init()
+workers = [Worker.remote(f"w{i}") for i in range(3)]
+ray.get(workers[0].call_peer.remote("w1", "hi"))  # => "hello: hi"
+pul.cleanup_ray()
 ```
 
-### 节点 2（加入）
-
-```python
-from pulsing.compat import ray
-
-ray.init(address="0.0.0.0:8001", seeds=["192.168.1.1:8000"])
-
-# 查找远程 Actor
-worker = ray.get_actor("Worker")
-result = ray.get(worker.process.remote("hello"))
-```
+**你获得的能力：** Ray 处理进程调度和资源管理。Pulsing 增加流式、命名 Actor 发现和直接的 Actor 间通信——不经过 Ray 的对象存储。
 
 ---
 
-## 原生异步 API（可选）
+## 独立模式：Pulsing 原生 API
 
-新代码建议使用原生异步 API：
+适合新项目或需要 Pulsing 完整特性的场景：
+
+### API 对照表（Ray -> Pulsing）
+
+| Ray | Pulsing |
+|---|---|
+| `ray.init()` | `await pul.init()` |
+| `ray.shutdown()` | `await pul.shutdown()` |
+| `@ray.remote` | `@pul.remote` |
+| `Actor.remote(args...)` | `await Actor.spawn(args...)` |
+| `ray.get(actor.method.remote(args...))` | `await actor.method(args...)` |
+| `ray.get_actor(name)` | `await Actor.resolve(name)` 或 `await pul.resolve(name)` |
+
+### 最小示例
+
+**Ray：**
+
+```python
+import ray
+
+ray.init()
+
+@ray.remote
+class Counter:
+    def __init__(self):
+        self.value = 0
+    def inc(self):
+        self.value += 1
+        return self.value
+
+counter = Counter.remote()
+print(ray.get(counter.inc.remote()))
+ray.shutdown()
+```
+
+**Pulsing：**
 
 ```python
 import pulsing as pul
@@ -141,38 +87,63 @@ import pulsing as pul
 class Counter:
     def __init__(self):
         self.value = 0
-
     def inc(self):
         self.value += 1
         return self.value
 
 async def main():
     await pul.init()
-    counter = await Counter.spawn()
-    print(await counter.inc())  # 1
+    counter = await Counter.spawn(name="counter")
+    print(await counter.inc())
     await pul.shutdown()
 ```
 
-**优势：**
+**关键差异：**
 
-- 更简洁的 `async/await` 语法
-- 无需 `ray.get()` 样板代码
-- IDE 自动补全正常工作
-- 可使用流式消息
+| 方面 | Ray | Pulsing |
+|------|-----|---------|
+| 创建 Actor | `Counter.remote()` | `await Counter.spawn()` — 原生 async |
+| 调用方法 | `ray.get(counter.inc.remote())` | `await counter.inc()` — 直接 await |
+| 按名获取 | `ray.get_actor("counter")` | `await Counter.resolve("counter")` — 带类型代理 |
+| 流式 | 非内置 | 原生 `async for chunk in actor.stream()` |
+| 发现 | 需要 GCS | 内置 gossip，零外部依赖 |
+
+心智模型一致（远程类、spawn、方法调用）。Pulsing 增加了原生 async、流式和自包含集群能力。
 
 ---
 
-## 限制
+## 分布式模式对照
 
-Ray 兼容 API 不支持：
+### 节点 1（种子）
 
-- Ray Serve
-- Ray Tune
-- Ray Data
-- Object Store（大对象）
-- Placement Groups
+```python
+import pulsing as pul
 
-这些功能请继续使用 Ray。Pulsing 专注于 Actor 模型。
+@pul.remote
+class Worker:
+    def process(self, data: str) -> str:
+        return f"processed: {data}"
+
+await pul.init(addr="0.0.0.0:8000")
+await Worker.spawn(name="worker")
+```
+
+### 节点 2（加入 + 解析）
+
+```python
+import pulsing as pul
+
+await pul.init(addr="0.0.0.0:8001", seeds=["192.168.1.1:8000"])
+worker = await Worker.resolve("worker")
+result = await worker.process("hello")
+```
+
+---
+
+## 说明
+
+- 优先使用 typed proxy：`await Class.resolve(name)`。
+- 若只有运行时名称：`ref = await pul.resolve(name)`，再使用 `ref.as_type(Class)` / `ref.as_any()`。
 
 ---
 

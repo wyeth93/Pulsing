@@ -57,14 +57,9 @@ Pulsing 遵循**经典 Actor 模型**（类似 Erlang/Akka）：
 
 ---
 
-## 两种 API 风格
+## Python API
 
-| API | 导入方式 | 风格 | 适用场景 |
-|-----|---------|------|----------|
-| **原生异步** | `import pulsing as pul` | `async/await` | 新项目，追求极致性能 |
-| **Ray 兼容** | `from pulsing.compat import ray` | 同步调用 | 从 Ray 迁移，快速原型 |
-
-### 原生异步 API（推荐）
+### 全局异步 API
 
 ```python
 import pulsing as pul
@@ -83,34 +78,6 @@ async def main():
     calc = await Calculator.spawn(initial_value=100)
     result = await calc.add(50)  # 150
     await pul.shutdown()
-```
-
-### Ray 兼容 API
-
-```python
-from pulsing.compat import ray
-
-ray.init()
-
-@ray.remote
-class Calculator:
-    def __init__(self, initial_value: int = 0):
-        self.value = initial_value
-
-    def add(self, n: int) -> int:
-        self.value += n
-        return self.value
-
-calc = Calculator.remote(initial_value=100)
-result = ray.get(calc.add.remote(50))  # 150
-ray.shutdown()
-```
-
-**从 Ray 迁移** — 只需修改导入：
-
-```python
-# 之前:  import ray
-# 之后:  from pulsing.compat import ray
 ```
 
 ---
@@ -353,14 +320,7 @@ class ResilientActor:
 ```python
 import pulsing as pul
 
-# 创建系统
-system = await pul.actor_system()
-
-# 生成命名 actor（可通过 resolve 发现）
-actor = await system.spawn(MyActor(), name="my_actor")
-
-# 调用方法
-result = await actor.ask({"action": "do_something"})
+await pul.init()
 
 # 使用 @remote 装饰器（推荐）
 @pul.remote
@@ -374,7 +334,7 @@ result = await service.process("hello")
 proxy = await MyService.resolve("service")
 
 # 关闭
-await system.shutdown()
+await pul.shutdown()
 ```
 
 ---

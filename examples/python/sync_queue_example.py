@@ -23,14 +23,13 @@ async def main():
     """Main function"""
     logger.info("=== Distributed Memory Queue Example (Synchronous Version) ===\n")
 
-    # Create Actor system
-    system = await pul.actor_system()
-    logger.info("✓ Actor system started\n")
+    await pul.init()
+    logger.info("✓ Global system initialized\n")
 
     try:
         # Producer: open queue for writing, get synchronous wrapper
         writer = (
-            await system.queue.write(
+            await pul.queue.write(
                 "my_queue",
                 bucket_column="user_id",  # Bucket by user_id
                 num_buckets=4,
@@ -40,7 +39,7 @@ async def main():
         logger.info("✓ Queue created (synchronous writer)\n")
 
         # Consumer: open queue for reading, get synchronous wrapper
-        reader = (await system.queue.read("my_queue")).sync()
+        reader = (await pul.queue.read("my_queue")).sync()
         logger.info("✓ Queue opened (synchronous reader)\n")
 
         # Synchronously write data
@@ -68,7 +67,7 @@ async def main():
         logger.info("✓ Example completed!")
 
     finally:
-        await system.shutdown()
+        await pul.shutdown()
         logger.info("System shutdown")
 
 

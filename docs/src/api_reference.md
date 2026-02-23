@@ -120,22 +120,17 @@ Note: Error type information is preserved for both local and remote calls. Remot
 
 ## Core Functions
 
-### pul.actor_system
+### pul.init / pul.shutdown
 
-Create a new Actor System instance.
+Global system initialization.
 
 ```python
 import asyncio
 import pulsing as pul
 
 async def example():
-    system = await pul.actor_system(
-        addr=None,               # Bind address, None for standalone
-        # Keyword-only arguments follow
-        seeds=None,             # Seed nodes for cluster (list[str] or None)
-        passphrase=None,        # TLS passphrase (str or None)
-    )
-    return system
+    await pul.init(addr=None, seeds=None, passphrase=None)
+    await pul.shutdown()
 
 # Usage example
 if __name__ == "__main__":
@@ -144,9 +139,14 @@ if __name__ == "__main__":
     pass
 ```
 
-**Returns:** `ActorSystem` instance
+**Parameters:**
+- `addr`: Bind address (str or None for standalone)
+- `seeds`: Seed nodes to join cluster (list[str] or None)
+- `passphrase`: TLS passphrase (str or None)
 
-**Example:**
+### Under the Hood: pul.actor_system
+
+Create a new explicit `ActorSystem` instance when you need low-level control.
 
 ```python
 import asyncio
@@ -171,38 +171,6 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
-
-### pul.init / pul.shutdown
-
-Global system initialization (Ray-style async API).
-
-```python
-import asyncio
-import pulsing as pul
-
-class MyActor:
-    async def receive(self, msg):
-        return f"echo: {msg}"
-
-async def main():
-    # Initialize global system
-    await pul.init(addr=None, seeds=None, passphrase=None)
-
-    # Use global system
-    actor = await pul.spawn(MyActor())
-    ref = await pul.resolve("actor_name")
-
-    # Shutdown
-    await pul.shutdown()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-**Parameters:**
-- `addr`: Bind address (str or None for standalone)
-- `seeds`: Seed nodes to join cluster (list[str] or None)
-- `passphrase`: TLS passphrase (str or None)
 
 ## Core Classes
 
@@ -261,6 +229,14 @@ class ActorRef:
 
     async def tell(self, msg):
         """Send a message without waiting for response (fire-and-forget)."""
+        pass
+
+    def as_any(self):
+        """Get untyped ActorProxy when remote class is unknown."""
+        pass
+
+    def as_type(self, cls):
+        """Get typed ActorProxy bound to class metadata."""
         pass
 ```
 
@@ -336,7 +312,7 @@ class ResilientWorker:
     def work(self, data): ...
 ```
 
-## Base Actor
+## Under the Hood: Base Actor
 
 For low-level control, inherit from Actor base class.
 
@@ -370,8 +346,8 @@ Distributed queue for data pipelines.
 
 ```python
 # Write
-writer = await system.queue.write(
-    topic="my_queue",
+writer = await pul.queue.write(
+    "my_queue",
     bucket_column="user_id",
     num_buckets=4,
 )
@@ -379,31 +355,8 @@ await writer.put({"user_id": "u1", "data": "hello"})
 await writer.flush()
 
 # Read
-reader = await system.queue.read("my_queue")
+reader = await pul.queue.read("my_queue")
 records = await reader.get(limit=100)
-```
-
-## Ray Compatibility
-
-Drop-in replacement for Ray.
-
-```python
-from pulsing.compat import ray
-
-ray.init()
-
-@ray.remote
-class Counter:
-    def __init__(self):
-        self.value = 0
-    def incr(self):
-        self.value += 1
-        return self.value
-
-counter = Counter.remote()
-result = ray.get(counter.incr.remote())
-
-ray.shutdown()
 ```
 
 ## Rust API

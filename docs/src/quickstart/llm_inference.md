@@ -2,6 +2,16 @@
 
 Build a **scalable LLM inference backend** with Pulsing in 10 minutes.
 
+**Before / After:**
+
+| | Before (single process or ad‑hoc script) | After (Pulsing) |
+|---|------------------------------------------|-----------------|
+| **API** | Your own HTTP or in-process only | OpenAI-compatible HTTP API (`/v1/chat/completions`) |
+| **Scaling** | One process, one model | Router + N workers; add nodes and workers as needed |
+| **Streaming** | Hand-rolled if any | Native streaming from Router to client |
+
+You get a **Router** (HTTP API + load balancing) and **Workers** (model backends). Same Actor model; add more workers or nodes without changing client code.
+
 **What you'll build:**
 
 - A Router that exposes an **OpenAI-compatible HTTP API**
@@ -43,7 +53,7 @@ Choose a backend:
 Open **Terminal A**:
 
 ```bash
-pulsing actor pulsing.actors.Router \
+pulsing actor pulsing.serving.Router \
   --addr 0.0.0.0:8000 \
   --http_port 8080 \
   --model_name my-llm
@@ -64,7 +74,7 @@ Open **Terminal B**:
 === "Transformers (CPU)"
 
     ```bash
-    pulsing actor pulsing.actors.TransformersWorker \
+    pulsing actor pulsing.serving.TransformersWorker \
       --model_name gpt2 \
       --device cpu \
       --addr 0.0.0.0:8001 \
@@ -74,7 +84,7 @@ Open **Terminal B**:
 === "vLLM (GPU)"
 
     ```bash
-    pulsing actor pulsing.actors.VllmWorker \
+    pulsing actor pulsing.serving.VllmWorker \
       --model Qwen/Qwen2.5-0.5B \
       --addr 0.0.0.0:8002 \
       --seeds 127.0.0.1:8000
@@ -135,10 +145,10 @@ Add more workers to handle more load:
 
 ```bash
 # Terminal C
-pulsing actor pulsing.actors.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8003 --seeds 127.0.0.1:8000
+pulsing actor pulsing.serving.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8003 --seeds 127.0.0.1:8000
 
 # Terminal D
-pulsing actor pulsing.actors.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8004 --seeds 127.0.0.1:8000
+pulsing actor pulsing.serving.TransformersWorker --model_name gpt2 --addr 0.0.0.0:8004 --seeds 127.0.0.1:8000
 ```
 
 The Router automatically load-balances across all workers.

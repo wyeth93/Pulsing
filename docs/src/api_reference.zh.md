@@ -120,23 +120,17 @@ except PulsingRuntimeError as e:
 
 ## 核心函数
 
-### pul.actor_system
+### pul.init / pul.shutdown
 
-创建新的 Actor System 实例。
+全局系统初始化。
 
 ```python
 import asyncio
 import pulsing as pul
 
 async def example():
-    # 函数签名: actor_system(addr=None, *, seeds=None, passphrase=None) -> ActorSystem
-    system = await pul.actor_system(
-        addr=None,               # 绑定地址（str 或 None 表示单机模式）
-#        # 关键字参数开始                       # 关键字参数开始
-        seeds=None,              # 集群种子节点（list[str] 或 None）
-        passphrase=None,         # TLS 密码短语（str 或 None）
-    )
-    return system
+    await pul.init(addr=None, seeds=None, passphrase=None)
+    await pul.shutdown()
 
 # 使用示例
 if __name__ == "__main__":
@@ -145,9 +139,14 @@ if __name__ == "__main__":
     pass
 ```
 
-**返回:** `ActorSystem` 实例
+**参数:**
+- `addr`: 绑定地址（str 或 None 表示单机模式）
+- `seeds`: 加入集群的种子节点（list[str] 或 None）
+- `passphrase`: TLS 密码短语（str 或 None）
 
-**示例：**
+### Under the Hood：pul.actor_system
+
+当需要低层控制时，创建显式 `ActorSystem` 实例。
 
 ```python
 import asyncio
@@ -172,38 +171,6 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 ```
-
-### pul.init / pul.shutdown
-
-全局系统初始化（Ray 风格异步 API）。
-
-```python
-import asyncio
-import pulsing as pul
-
-class MyActor:
-    async def receive(self, msg):
-        return f"echo: {msg}"
-
-async def main():
-    # 初始化全局系统
-    await pul.init(addr=None, seeds=None, passphrase=None)
-
-    # 使用全局系统
-    actor = await pul.spawn(MyActor())
-    ref = await pul.resolve("actor_name")
-
-    # 关闭
-    await pul.shutdown()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-**参数:**
-- `addr`: 绑定地址（str 或 None 表示单机模式）
-- `seeds`: 加入集群的种子节点（list[str] 或 None）
-- `passphrase`: TLS 密码短语（str 或 None）
 
 ## 核心类
 
@@ -285,6 +252,14 @@ class ActorRef:
     async def tell(self, msg):
         """发送消息但不等待响应（fire-and-forget）。"""
         pass
+
+    def as_any(self):
+        """在未知远端类型时，返回无类型 ActorProxy。"""
+        pass
+
+    def as_type(self, cls):
+        """绑定类元数据并返回有类型 ActorProxy。"""
+        pass
 ```
 
 ### ActorProxy
@@ -359,7 +334,7 @@ class ResilientWorker:
     def work(self, data): ...
 ```
 
-## 基础 Actor
+## Under the Hood：基础 Actor
 
 需要底层控制时，可使用基础 Actor 类。
 
@@ -393,8 +368,8 @@ response = await actor.ask({"action": "add", "n": 10})
 
 ```python
 # 写入
-writer = await system.queue.write(
-    topic="my_queue",
+writer = await pul.queue.write(
+    "my_queue",
     bucket_column="user_id",
     num_buckets=4,
 )
@@ -402,31 +377,8 @@ await writer.put({"user_id": "u1", "data": "hello"})
 await writer.flush()
 
 # 读取
-reader = await system.queue.read("my_queue")
+reader = await pul.queue.read("my_queue")
 records = await reader.get(limit=100)
-```
-
-## Ray 兼容
-
-Ray 的直接替换。
-
-```python
-from pulsing.compat import ray
-
-ray.init()
-
-@ray.remote
-class Counter:
-    def __init__(self):
-        self.value = 0
-    def incr(self):
-        self.value += 1
-        return self.value
-
-counter = Counter.remote()
-result = ray.get(counter.incr.remote())
-
-ray.shutdown()
 ```
 
 ## Rust API

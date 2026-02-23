@@ -24,16 +24,12 @@ pip install -e .
 
 ## Actor Module
 
-::: pulsing.actor
+::: pulsing.core
 
 ## Agent Module
 
 ::: pulsing.agent
 
-## Compatibility Module
-
-::: pulsing.compat
-
 ## Queue Module
 
-::: pulsing.queue
+::: pulsing.streaming
