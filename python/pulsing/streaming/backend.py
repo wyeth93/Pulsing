@@ -28,26 +28,52 @@ from typing import Any, AsyncIterator, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 
+def build_batch_meta(
+    sampled: list[int], fields: list[str], partition_id: str = "default"
+) -> dict:
+    """Build the standard batch-meta dict used by get_meta implementations."""
+    return {
+        "samples": [
+            {
+                "partition_id": partition_id,
+                "global_index": idx,
+                "fields": {
+                    f: {
+                        "name": f,
+                        "dtype": None,
+                        "shape": None,
+                        "production_status": "ready",
+                    }
+                    for f in fields
+                },
+            }
+            for idx in sampled
+        ],
+        "global_indexes": sampled,
+    }
+
+
 @runtime_checkable
 class StorageBackend(Protocol):
-    """Storage Backend Protocol
+    """Core Storage Backend Protocol.
 
-    All storage backends must implement this protocol. Can be implemented via inheritance or duck typing.
+    Every backend must implement these seven methods.
+    Duck typing is fine — inheritance from this class is not required.
     """
 
     @abstractmethod
     async def put(self, record: dict[str, Any]) -> None:
-        """Write a single record"""
+        """Write a single record."""
         ...
 
     @abstractmethod
     async def put_batch(self, records: list[dict[str, Any]]) -> None:
-        """Write records in batch"""
+        """Write records in batch."""
         ...
 
     @abstractmethod
     async def get(self, limit: int, offset: int) -> list[dict[str, Any]]:
-        """Read records"""
+        """Read records."""
         ...
 
     @abstractmethod
@@ -58,32 +84,46 @@ class StorageBackend(Protocol):
         wait: bool = False,
         timeout: float | None = None,
     ) -> AsyncIterator[list[dict[str, Any]]]:
-        """Stream read records"""
+        """Stream records."""
         ...
 
     @abstractmethod
     async def flush(self) -> None:
-        """Flush buffer to persistent storage"""
+        """Flush buffer to persistent storage."""
         ...
 
     @abstractmethod
     async def stats(self) -> dict[str, Any]:
-        """Get statistics"""
+        """Return statistics dict."""
         ...
 
     @abstractmethod
     def total_count(self) -> int:
-        """Total record count"""
+        """Total record count (synchronous)."""
         ...
 
+
+@runtime_checkable
+class TensorBackend(Protocol):
+    """Extension protocol for tensor-native backends.
+
+    Backends that store tensor/array data efficiently should implement this.
+    BucketStorage checks ``isinstance(backend, TensorBackend)`` once at startup
+    and delegates tensor operations to the typed reference; it never falls back
+    to generic ``get``/``put`` for these paths.
+    """
+
+    @abstractmethod
     async def put_tensor(self, data: Any, **kwargs: Any) -> Any:
-        """Optional tensor-native put API."""
-        raise NotImplementedError
+        """Write tensor data; return metadata describing stored indexes."""
+        ...
 
+    @abstractmethod
     async def get_data(self, batch_meta: Any, fields: list[str] | None = None) -> Any:
-        """Optional tensor-native batch data API."""
-        raise NotImplementedError
+        """Fetch tensor data for a batch described by batch_meta."""
+        ...
 
+    @abstractmethod
     async def get_meta(
         self,
         fields: list[str],
@@ -92,8 +132,38 @@ class StorageBackend(Protocol):
         sampler: Any = None,
         **sampling_kwargs: Any,
     ) -> Any:
-        """Optional tensor-native metadata API."""
-        raise NotImplementedError
+        """Return sampling metadata for a training batch."""
+        ...
+
+
+@runtime_checkable
+class ConsumptionBackend(Protocol):
+    """Extension protocol for backends that track consumption state.
+
+    Implementing this allows BucketStorage to delegate consumption bookkeeping
+    to the backend (e.g. for persistent replay or deduplication).
+    When absent, BucketStorage maintains its own in-memory tracking.
+    """
+
+    @abstractmethod
+    async def mark_consumed(self, task_name: str, global_indexes: list[int]) -> None:
+        """Mark indexes as consumed for a given task."""
+        ...
+
+    @abstractmethod
+    async def reset_consumption(self, task_name: str) -> None:
+        """Reset consumption state for a given task."""
+        ...
+
+    @abstractmethod
+    async def clear(self, global_indexes: list[int]) -> None:
+        """Remove records at the given global indexes."""
+        ...
+
+    @abstractmethod
+    async def get_by_indices(self, indexes: list[int]) -> list[dict[str, Any]]:
+        """Fetch records by their global indexes (more efficient than repeated get)."""
+        ...
 
 
 class MemoryBackend:
@@ -215,25 +285,24 @@ class MemoryBackend:
             sampled, _ = sampler.sample(ready, batch_size, **sampling_kwargs)
         else:
             sampled = ready[:batch_size]
-        return {
-            "samples": [
-                {
-                    "partition_id": sampling_kwargs.get("partition_id", "default"),
-                    "global_index": idx,
-                    "fields": {
-                        field: {
-                            "name": field,
-                            "dtype": None,
-                            "shape": None,
-                            "production_status": "ready",
-                        }
-                        for field in fields
-                    },
-                }
-                for idx in sampled
-            ],
-            "global_indexes": sampled,
-        }
+        return build_batch_meta(
+            sampled, fields, sampling_kwargs.get("partition_id", "default")
+        )
+
+    # ---- ConsumptionBackend methods ----
+
+    async def get_by_indices(self, indexes: list[int]) -> list[dict[str, Any]]:
+        return [self.buffer[i] for i in indexes if 0 <= i < len(self.buffer)]
+
+    async def mark_consumed(self, task_name: str, global_indexes: list[int]) -> None:
+        pass  # BucketStorage owns the consumption state for MemoryBackend
+
+    async def reset_consumption(self, task_name: str) -> None:
+        pass
+
+    async def clear(self, global_indexes: list[int]) -> None:
+        to_remove = set(global_indexes)
+        self.buffer = [r for i, r in enumerate(self.buffer) if i not in to_remove]
 
 
 # ============================================================

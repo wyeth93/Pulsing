@@ -33,7 +33,6 @@ from pulsing.core import (
     remote,
     # Resolve function
     resolve,
-    as_any,
     # Mount (attach existing object to Pulsing network)
     mount,
     unmount,
@@ -43,12 +42,10 @@ from pulsing.core import (
     ActorRef,
     ActorId,
     ActorProxy,
-    Message,
-    StreamMessage,
     SystemConfig,
-    # Service
-    PythonActorService,
-    PYTHON_ACTOR_SERVICE_NAME,
+    # Service (internal, used by actor_system())
+    PythonActorService as _PythonActorService,
+    PYTHON_ACTOR_SERVICE_NAME as _PYTHON_ACTOR_SERVICE_NAME,
 )
 
 
@@ -205,8 +202,8 @@ async def actor_system(
     system = ActorSystem(inner)
 
     # Automatically register PythonActorService (for remote actor creation)
-    service = PythonActorService(inner)
-    await inner.spawn(service, name=PYTHON_ACTOR_SERVICE_NAME, public=True)
+    service = _PythonActorService(inner)
+    await inner.spawn(service, name=_PYTHON_ACTOR_SERVICE_NAME, public=True)
 
     return system
 
@@ -280,32 +277,28 @@ class _GlobalQueueAPI:
     """Lazy proxy for pul.queue that uses the global system."""
 
     async def write(self, topic, **kwargs):
-        """Open queue for writing. See QueueAPI.write() for args."""
-        from pulsing.streaming import QueueAPI
+        from pulsing.streaming import write_queue
 
-        return await QueueAPI(get_system()).write(topic, **kwargs)
+        return await write_queue(get_system(), topic, **kwargs)
 
     async def read(self, topic, **kwargs):
-        """Open queue for reading. See QueueAPI.read() for args."""
-        from pulsing.streaming import QueueAPI
+        from pulsing.streaming import read_queue
 
-        return await QueueAPI(get_system()).read(topic, **kwargs)
+        return await read_queue(get_system(), topic, **kwargs)
 
 
 class _GlobalTopicAPI:
     """Lazy proxy for pul.topic that uses the global system."""
 
     async def write(self, topic, **kwargs):
-        """Open topic for writing. See TopicAPI.write() for args."""
-        from pulsing.streaming import TopicAPI
+        from pulsing.streaming import write_topic
 
-        return await TopicAPI(get_system()).write(topic, **kwargs)
+        return await write_topic(get_system(), topic, **kwargs)
 
     async def read(self, topic, **kwargs):
-        """Open topic for reading. See TopicAPI.read() for args."""
-        from pulsing.streaming import TopicAPI
+        from pulsing.streaming import read_topic
 
-        return await TopicAPI(get_system()).read(topic, **kwargs)
+        return await read_topic(get_system(), topic, **kwargs)
 
 
 queue = _GlobalQueueAPI()
@@ -324,7 +317,6 @@ __all__ = [
     "spawn",
     "refer",
     "resolve",
-    "as_any",
     "get_system",
     "is_initialized",
     # Decorator
@@ -348,8 +340,6 @@ __all__ = [
     "ActorRef",
     "ActorId",
     "ActorProxy",
-    "Message",
-    "StreamMessage",
     # Exceptions
     "PulsingError",
     "PulsingRuntimeError",

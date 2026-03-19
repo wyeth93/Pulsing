@@ -3,7 +3,8 @@
 import asyncio
 import pytest
 import json
-from pulsing.core import init, remote, get_system, list_actors
+from pulsing.core import init, remote, get_system
+from pulsing.core.remote import get_system_actor
 from pulsing.cli.inspect import _print_actors_table
 import io
 import sys
@@ -28,9 +29,9 @@ async def test_actor_list_basic():
     system = get_system()
 
     # Create some actors locally (list_actors only returns local actors)
-    await TestCounter.local(system, name="counter-1")
-    await TestCounter.local(system, name="counter-2")
-    await TestCalculator.local(system, name="calc")
+    await TestCounter.spawn(system=system, name="counter-1")
+    await TestCounter.spawn(system=system, name="counter-2")
+    await TestCalculator.spawn(system=system, name="calc")
 
     # Wait a bit for actors to be registered in the system
     await asyncio.sleep(0.2)
@@ -101,7 +102,7 @@ async def test_actor_list_all():
     system = get_system()
 
     # Create one user actor locally (list_actors only returns local actors)
-    await TestCounter.local(system, name="test-counter")
+    await TestCounter.spawn(system=system, name="test-counter")
 
     # Wait a bit for actors to be registered in the system
     await asyncio.sleep(0.2)
@@ -160,7 +161,7 @@ async def test_actor_list_json():
     system = get_system()
 
     # Create actor locally (list_actors only returns local actors)
-    await TestCounter.local(system, name="json-test")
+    await TestCounter.spawn(system=system, name="json-test")
 
     # Wait a bit for actors to be registered in the system
     await asyncio.sleep(0.2)

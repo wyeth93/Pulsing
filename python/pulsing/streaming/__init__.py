@@ -9,7 +9,7 @@ Topic:
     reader = await system.topic.read("events")
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .backend import (
     MemoryBackend,
@@ -33,109 +33,48 @@ from .pubsub import (
     subscribe_to_topic,
     write_topic,
 )
-from .queue import Queue, QueueReader, QueueWriter, read_queue, write_queue
+from .queue import Queue, QueueReader, read_queue, write_queue
 from .storage import BucketStorage
-from .sync_queue import SyncQueue, SyncQueueReader, SyncQueueWriter
+from .sync_queue import SyncQueue, SyncQueueReader
 
 if TYPE_CHECKING:
     from pulsing._core import ActorSystem
 
 
 class QueueAPI:
-    """Queue API entry point via system.queue"""
+    """Queue API entry point via system.queue — delegates to write_queue/read_queue."""
 
     def __init__(self, system: "ActorSystem"):
         self._system = system
 
-    async def write(
-        self,
-        topic: str,
-        *,
-        bucket_column: str = "id",
-        num_buckets: int = 4,
-        batch_size: int = 100,
-        storage_path: str | None = None,
-        backend: str | type = "memory",
-        backend_options: dict[str, Any] | None = None,
-    ) -> QueueWriter:
-        """Open queue for writing"""
-        return await write_queue(
-            self._system,
-            topic,
-            bucket_column=bucket_column,
-            num_buckets=num_buckets,
-            batch_size=batch_size,
-            storage_path=storage_path,
-            backend=backend,
-            backend_options=backend_options,
-        )
+    async def write(self, topic: str, **kwargs) -> Queue:
+        return await write_queue(self._system, topic, **kwargs)
 
-    async def read(
-        self,
-        topic: str,
-        *,
-        bucket_id: int | None = None,
-        bucket_ids: list[int] | None = None,
-        rank: int | None = None,
-        world_size: int | None = None,
-        num_buckets: int = 4,
-        storage_path: str | None = None,
-        backend: str | type = "memory",
-        backend_options: dict[str, Any] | None = None,
-    ) -> QueueReader:
-        """Open queue for reading"""
-        return await read_queue(
-            self._system,
-            topic,
-            bucket_id=bucket_id,
-            bucket_ids=bucket_ids,
-            rank=rank,
-            world_size=world_size,
-            num_buckets=num_buckets,
-            storage_path=storage_path,
-            backend=backend,
-            backend_options=backend_options,
-        )
+    async def read(self, topic: str, **kwargs) -> QueueReader:
+        return await read_queue(self._system, topic, **kwargs)
 
 
 class TopicAPI:
-    """Topic API entry point via system.topic"""
+    """Topic API entry point via system.topic — delegates to write_topic/read_topic."""
 
     def __init__(self, system: "ActorSystem"):
         self._system = system
 
-    async def write(
-        self,
-        topic: str,
-        *,
-        writer_id: str | None = None,
-    ) -> TopicWriter:
-        """Open topic for writing"""
-        return await write_topic(self._system, topic, writer_id=writer_id)
+    async def write(self, topic: str, **kwargs) -> TopicWriter:
+        return await write_topic(self._system, topic, **kwargs)
 
-    async def read(
-        self,
-        topic: str,
-        *,
-        reader_id: str | None = None,
-        auto_start: bool = False,
-    ) -> TopicReader:
-        """Open topic for reading"""
-        return await read_topic(
-            self._system, topic, reader_id=reader_id, auto_start=auto_start
-        )
+    async def read(self, topic: str, **kwargs) -> TopicReader:
+        return await read_topic(self._system, topic, **kwargs)
 
 
 __all__ = [
     "QueueAPI",
     "TopicAPI",
     "Queue",
-    "QueueWriter",
     "QueueReader",
     "write_queue",
     "read_queue",
     "SyncQueue",
-    "SyncQueueWriter",
     "SyncQueueReader",
     "StorageManager",
     "BucketStorage",

@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pulsing.core import ActorId, ActorRef, ActorSystem, remote
 
@@ -92,12 +92,9 @@ class StorageManager:
         self._buckets: dict[tuple[str, int], ActorRef] = {}
         # Topic brokers managed by this node: {topic_name: ActorRef}
         self._topics: dict[str, ActorRef] = {}
-        # Per-resource locks so different buckets/topics can be created in parallel
-        self._bucket_locks: dict[tuple[str, int], asyncio.Lock] = {}
-        self._topic_locks: dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         self._locks_meta = asyncio.Lock()
 
-        # Cached cluster member information
         self._members: list[dict] = []
         self._members_updated_at: float = 0
 
@@ -125,6 +122,30 @@ class StorageManager:
         """Generate unique key for topic"""
         return f"topic:{topic_name}"
 
+    async def _get_or_create(
+        self, cache: dict, cache_key, actor_name: str, spawn_fn
+    ) -> ActorRef:
+        """Get or create a local Actor with per-key locking."""
+        if cache_key in cache:
+            return cache[cache_key]
+
+        async with self._locks_meta:
+            if actor_name not in self._locks:
+                self._locks[actor_name] = asyncio.Lock()
+            lock = self._locks[actor_name]
+
+        async with lock:
+            if cache_key in cache:
+                return cache[cache_key]
+            try:
+                cache[cache_key] = await self.system.resolve_named(actor_name)
+                logger.debug(f"Resolved existing: {actor_name}")
+            except Exception:
+                proxy = await spawn_fn(actor_name)
+                cache[cache_key] = proxy.ref
+                logger.info(f"Created: {actor_name}")
+            return cache[cache_key]
+
     async def _get_or_create_bucket(
         self,
         topic: str,
@@ -134,72 +155,75 @@ class StorageManager:
         backend: str | type | None = None,
         backend_options: dict | None = None,
     ) -> ActorRef:
-        """Get or create local BucketStorage Actor. Per-key lock allows parallel creation."""
         key = (topic, bucket_id)
-        if key in self._buckets:
-            return self._buckets[key]
+        if storage_path:
+            bucket_storage_path = f"{storage_path}/bucket_{bucket_id}"
+        else:
+            bucket_storage_path = f"{self.base_storage_path}/{topic}/bucket_{bucket_id}"
 
-        async with self._locks_meta:
-            if key not in self._bucket_locks:
-                self._bucket_locks[key] = asyncio.Lock()
-            lock = self._bucket_locks[key]
+        async def spawn(name):
+            return await BucketStorage.spawn(
+                bucket_id=bucket_id,
+                storage_path=bucket_storage_path,
+                batch_size=batch_size,
+                backend=backend or self.default_backend,
+                backend_options=backend_options,
+                system=self.system,
+                name=name,
+                public=True,
+            )
 
-        async with lock:
-            if key in self._buckets:
-                return self._buckets[key]
-            actor_name = f"bucket_{topic}_{bucket_id}"
-            if storage_path:
-                bucket_storage_path = f"{storage_path}/bucket_{bucket_id}"
-            else:
-                bucket_storage_path = (
-                    f"{self.base_storage_path}/{topic}/bucket_{bucket_id}"
-                )
-            try:
-                self._buckets[key] = await self.system.resolve_named(actor_name)
-                logger.debug(f"Resolved existing bucket: {actor_name}")
-            except Exception:
-                proxy = await BucketStorage.local(
-                    self.system,
-                    bucket_id=bucket_id,
-                    storage_path=bucket_storage_path,
-                    batch_size=batch_size,
-                    backend=backend or self.default_backend,
-                    backend_options=backend_options,
-                    name=actor_name,
-                    public=True,
-                )
-                self._buckets[key] = proxy.ref
-                logger.info(f"Created bucket: {actor_name} at {bucket_storage_path}")
-            return self._buckets[key]
+        return await self._get_or_create(
+            self._buckets, key, f"bucket_{topic}_{bucket_id}", spawn
+        )
 
     async def _get_or_create_topic_broker(self, topic_name: str) -> ActorRef:
-        """Get or create local TopicBroker Actor. Per-topic lock allows parallel creation."""
-        if topic_name in self._topics:
-            return self._topics[topic_name]
+        async def spawn(name):
+            from pulsing.streaming.broker import TopicBroker
 
-        async with self._locks_meta:
-            if topic_name not in self._topic_locks:
-                self._topic_locks[topic_name] = asyncio.Lock()
-            lock = self._topic_locks[topic_name]
+            return await TopicBroker.spawn(
+                topic_name,
+                self.system,
+                system=self.system,
+                name=name,
+                public=True,
+            )
 
-        async with lock:
-            if topic_name in self._topics:
-                return self._topics[topic_name]
-            actor_name = f"_topic_broker_{topic_name}"
-            try:
-                self._topics[topic_name] = await self.system.resolve_named(actor_name)
-                logger.debug(f"Resolved existing topic broker: {actor_name}")
-            except Exception:
-                from pulsing.streaming.broker import TopicBroker
-
-                proxy = await TopicBroker.local(
-                    self.system, topic_name, self.system, name=actor_name, public=True
-                )
-                self._topics[topic_name] = proxy.ref
-                logger.info(f"Created topic broker: {actor_name}")
-            return self._topics[topic_name]
+        return await self._get_or_create(
+            self._topics, topic_name, f"_topic_broker_{topic_name}", spawn
+        )
 
     # ========== Public Remote Methods ==========
+
+    async def _route_resource(
+        self, resource_key: str, ready_type: str, extra_ready: dict, create_fn
+    ) -> dict:
+        """Common routing logic: check ownership via consistent hashing, create locally or redirect."""
+        members = await self._refresh_members()
+        owner_node_id = _compute_owner(resource_key, members)
+        local_node_id = str(self.system.node_id.id)
+
+        if owner_node_id is None or str(owner_node_id) == local_node_id:
+            ref = await create_fn()
+            return {
+                "_type": ready_type,
+                "actor_id": str(ref.actor_id.id),
+                "node_id": local_node_id,
+                **extra_ready,
+            }
+
+        owner_addr = None
+        for m in members:
+            m_node_id = m.get("node_id")
+            if m_node_id is not None and str(m_node_id) == str(owner_node_id):
+                owner_addr = m.get("addr")
+                break
+        return {
+            "_type": "Redirect",
+            "owner_node_id": str(owner_node_id),
+            "owner_addr": owner_addr,
+            **extra_ready,
+        }
 
     async def get_bucket(
         self,
@@ -210,84 +234,22 @@ class StorageManager:
         backend: str | None = None,
         backend_options: dict | None = None,
     ) -> dict:
-        """Get bucket reference.
-
-        Returns:
-            - {"_type": "BucketReady", "topic": ..., "bucket_id": ..., "actor_id": ..., "node_id": ...}
-            - {"_type": "Redirect", "topic": ..., "bucket_id": ..., "owner_node_id": ..., "owner_addr": ...}
-        """
-        # Compute owner
-        bucket_key = self._bucket_key(topic, bucket_id)
-        members = await self._refresh_members()
-        owner_node_id = _compute_owner(bucket_key, members)
-        local_node_id = str(self.system.node_id.id)
-
-        if owner_node_id is None or str(owner_node_id) == local_node_id:
-            # This node is responsible, create/return bucket
-            bucket_ref = await self._get_or_create_bucket(
+        return await self._route_resource(
+            self._bucket_key(topic, bucket_id),
+            "BucketReady",
+            {"topic": topic, "bucket_id": bucket_id},
+            lambda: self._get_or_create_bucket(
                 topic, bucket_id, batch_size, storage_path, backend, backend_options
-            )
-            return {
-                "_type": "BucketReady",
-                "topic": topic,
-                "bucket_id": bucket_id,
-                "actor_id": str(bucket_ref.actor_id.id),
-                "node_id": str(local_node_id),
-            }
-        else:
-            # Not owned by this node, return redirect
-            owner_addr = None
-            for m in members:
-                m_node_id = m.get("node_id")
-                if m_node_id is not None and str(m_node_id) == str(owner_node_id):
-                    owner_addr = m.get("addr")
-                    break
-
-            return {
-                "_type": "Redirect",
-                "topic": topic,
-                "bucket_id": bucket_id,
-                "owner_node_id": str(owner_node_id),
-                "owner_addr": owner_addr,
-            }
+            ),
+        )
 
     async def get_topic(self, topic: str) -> dict:
-        """Get topic broker reference.
-
-        Returns:
-            - {"_type": "TopicReady", "topic": ..., "actor_id": ..., "node_id": ...}
-            - {"_type": "Redirect", "topic": ..., "owner_node_id": ..., "owner_addr": ...}
-        """
-        # Compute owner
-        topic_key = self._topic_key(topic)
-        members = await self._refresh_members()
-        owner_node_id = _compute_owner(topic_key, members)
-        local_node_id = str(self.system.node_id.id)
-
-        if owner_node_id is None or str(owner_node_id) == local_node_id:
-            # This node is responsible, create/return topic broker
-            broker_ref = await self._get_or_create_topic_broker(topic)
-            return {
-                "_type": "TopicReady",
-                "topic": topic,
-                "actor_id": str(broker_ref.actor_id.id),
-                "node_id": str(local_node_id),
-            }
-        else:
-            # Not owned by this node, return redirect
-            owner_addr = None
-            for m in members:
-                m_node_id = m.get("node_id")
-                if m_node_id is not None and str(m_node_id) == str(owner_node_id):
-                    owner_addr = m.get("addr")
-                    break
-
-            return {
-                "_type": "Redirect",
-                "topic": topic,
-                "owner_node_id": str(owner_node_id),
-                "owner_addr": owner_addr,
-            }
+        return await self._route_resource(
+            self._topic_key(topic),
+            "TopicReady",
+            {"topic": topic},
+            lambda: self._get_or_create_topic_broker(topic),
+        )
 
     async def list_buckets(self) -> list[dict]:
         """List all buckets managed by this node.
@@ -364,10 +326,9 @@ async def get_storage_manager(system: ActorSystem) -> "ActorProxy":
         except Exception:
             pass
 
-        # Create new StorageManager using .local()
         try:
-            return await StorageManager.local(
-                system, system, name=STORAGE_MANAGER_NAME, public=True
+            return await StorageManager.spawn(
+                system, system=system, name=STORAGE_MANAGER_NAME, public=True
             )
         except Exception as e:
             if "already exists" in str(e).lower():
@@ -388,6 +349,71 @@ async def ensure_storage_managers(system: ActorSystem) -> None:
     logger.debug(f"Local StorageManager ensured on node {system.node_id.id}")
 
 
+async def _get_remote_manager(
+    system: ActorSystem,
+    owner_node_id_str: str,
+    retries: int = 10,
+) -> "ActorProxy":
+    """Resolve StorageManager on a remote node, retrying until it appears."""
+    owner_node_id_int = int(owner_node_id_str)
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return await StorageManager.resolve(
+                STORAGE_MANAGER_NAME, system=system, node_id=owner_node_id_int
+            )
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                logger.debug(
+                    f"StorageManager not on node {owner_node_id_str}, "
+                    f"retry {attempt + 1}/{retries}"
+                )
+                await asyncio.sleep(0.5)
+    raise RuntimeError(
+        f"StorageManager not found on node {owner_node_id_str} after {retries} retries: {last_exc}"
+    ) from last_exc
+
+
+async def _follow_redirects(
+    system: ActorSystem,
+    fetch_fn,
+    resolve_fn,
+    resource_name: str,
+    max_redirects: int = 3,
+) -> "ActorProxy":
+    """Follow redirects from StorageManager until the resource is ready.
+
+    Args:
+        fetch_fn: async (manager_proxy) -> resp_data dict
+        resolve_fn: async () -> ActorProxy (called when resource is ready)
+        resource_name: human-readable name for error messages
+    """
+    manager = await get_storage_manager(system)
+    local_id = str(system.node_id.id)
+
+    for attempt in range(max_redirects + 1):
+        resp = await fetch_fn(manager)
+        msg_type = resp.get("_type", "")
+
+        if msg_type in ("BucketReady", "TopicReady"):
+            return await resolve_fn()
+
+        if msg_type == "Redirect":
+            owner = str(resp.get("owner_node_id"))
+            if attempt >= max_redirects:
+                raise RuntimeError(f"Too many redirects for {resource_name}")
+            if owner == local_id:
+                raise RuntimeError(f"Redirect loop for {resource_name}")
+            logger.debug(f"Redirecting {resource_name} to node {owner}")
+            manager = await _get_remote_manager(system, owner)
+            continue
+
+        raise RuntimeError(f"Unexpected response type: {msg_type}")
+
+    raise RuntimeError(f"Failed to get {resource_name}")
+
+
 async def get_bucket_ref(
     system: ActorSystem,
     topic: str,
@@ -398,95 +424,24 @@ async def get_bucket_ref(
     backend_options: dict | None = None,
     max_redirects: int = 3,
 ) -> "ActorProxy":
-    """Get ActorProxy for specified bucket
-
-    Automatically handles redirects to ensure getting the bucket on the correct node.
-    Returns ActorProxy for direct method calls on BucketStorage.
-
-    Args:
-        system: Actor system
-        topic: Queue topic
-        bucket_id: Bucket ID
-        batch_size: Batch size
-        storage_path: Custom storage path (optional)
-        backend: Storage backend name or class (optional)
-        backend_options: Additional backend options (optional)
-        max_redirects: Maximum redirect count
-    """
-    # Request from local StorageManager first
-    manager = await get_storage_manager(system)
-
-    # Convert backend class to name if needed
-    backend_name = None
-    if backend:
-        backend_name = backend if isinstance(backend, str) else backend.__name__
-
-    for redirect_count in range(max_redirects + 1):
-        # Call manager.get_bucket() via proxy
-        resp_data = await manager.get_bucket(
+    """Get ActorProxy for the specified bucket, following redirects automatically."""
+    backend_name = (
+        (backend if isinstance(backend, str) else backend.__name__) if backend else None
+    )
+    return await _follow_redirects(
+        system,
+        lambda mgr: mgr.get_bucket(
             topic=topic,
             bucket_id=bucket_id,
             batch_size=batch_size,
             storage_path=storage_path,
             backend=backend_name,
             backend_options=backend_options,
-        )
-
-        msg_type = resp_data.get("_type", "")
-
-        if msg_type == "BucketReady":
-            # Successfully got bucket - resolve by actor name for typed proxy
-            actor_name = f"bucket_{topic}_{bucket_id}"
-            # Use BucketStorage.resolve to get typed ActorProxy
-            return await BucketStorage.resolve(actor_name, system=system)
-
-        elif msg_type == "Redirect":
-            # Need to redirect to other node
-            # owner_node_id transmitted as string, keep as string for comparison
-            owner_node_id_str = str(resp_data.get("owner_node_id"))
-            owner_addr = resp_data.get("owner_addr")
-
-            logger.debug(
-                f"Redirecting bucket {topic}:{bucket_id} to node {owner_node_id_str} @ {owner_addr}"
-            )
-
-            if redirect_count >= max_redirects:
-                raise RuntimeError(f"Too many redirects for bucket {topic}:{bucket_id}")
-
-            # Check if redirecting to self (avoid infinite loop)
-            # Compare as strings for consistency
-            if str(owner_node_id_str) == str(system.node_id.id):
-                raise RuntimeError(
-                    f"Redirect loop detected for bucket {topic}:{bucket_id}"
-                )
-
-            # Get owner node's StorageManager (with retry, wait for remote node initialization)
-            # Convert to int for resolve_named which expects int
-            owner_node_id_int = int(owner_node_id_str)
-            max_resolve_retries = 10
-            for resolve_retry in range(max_resolve_retries):
-                try:
-                    manager = await StorageManager.resolve(
-                        STORAGE_MANAGER_NAME, system=system, node_id=owner_node_id_int
-                    )
-                    break
-                except Exception as e:
-                    if resolve_retry < max_resolve_retries - 1:
-                        logger.debug(
-                            f"StorageManager not found on node {owner_node_id_str}, "
-                            f"retry {resolve_retry + 1}/{max_resolve_retries}"
-                        )
-                        await asyncio.sleep(0.5)
-                    else:
-                        raise RuntimeError(
-                            f"StorageManager not found on node {owner_node_id_str} after "
-                            f"{max_resolve_retries} retries: {e}"
-                        ) from e
-
-        else:
-            raise RuntimeError(f"Unexpected response: {msg_type}")
-
-    raise RuntimeError(f"Failed to get bucket {topic}:{bucket_id}")
+        ),
+        lambda: BucketStorage.resolve(f"bucket_{topic}_{bucket_id}", system=system),
+        f"bucket {topic}:{bucket_id}",
+        max_redirects,
+    )
 
 
 async def get_topic_broker(
@@ -494,61 +449,13 @@ async def get_topic_broker(
     topic: str,
     max_redirects: int = 3,
 ) -> "ActorProxy":
-    """Get broker ActorProxy for specified topic
-
-    Automatically handles redirects to ensure getting the broker on the correct node.
-    Returns ActorProxy for direct method calls on TopicBroker.
-
-    Args:
-        system: Actor system
-        topic: Topic name
-        max_redirects: Maximum redirect count
-    """
+    """Get broker ActorProxy for the specified topic, following redirects automatically."""
     from pulsing.streaming.broker import TopicBroker
 
-    manager = await get_storage_manager(system)
-
-    for redirect_count in range(max_redirects + 1):
-        # Call manager.get_topic() via proxy
-        resp_data = await manager.get_topic(topic=topic)
-        msg_type = resp_data.get("_type", "")
-
-        if msg_type == "TopicReady":
-            # Successfully got topic - resolve by actor name for typed proxy
-            actor_name = f"_topic_broker_{topic}"
-            return await TopicBroker.resolve(actor_name, system=system)
-
-        elif msg_type == "Redirect":
-            # owner_node_id transmitted as string, keep as string for comparison
-            owner_node_id_str = str(resp_data["owner_node_id"])
-
-            logger.debug(f"Redirecting topic {topic} to node {owner_node_id_str}")
-
-            if redirect_count >= max_redirects:
-                raise RuntimeError(f"Too many redirects for topic: {topic}")
-
-            # Compare as strings for consistency
-            if str(owner_node_id_str) == str(system.node_id.id):
-                raise RuntimeError(f"Redirect loop for topic: {topic}")
-
-            # Get owner node's StorageManager via proxy
-            # Convert to int for resolve_named which expects int
-            owner_node_id_int = int(owner_node_id_str)
-            for retry in range(10):
-                try:
-                    manager = await StorageManager.resolve(
-                        STORAGE_MANAGER_NAME, system=system, node_id=owner_node_id_int
-                    )
-                    break
-                except Exception as e:
-                    if retry < 9:
-                        await asyncio.sleep(0.5)
-                    else:
-                        raise RuntimeError(
-                            f"StorageManager not found on node {owner_node_id_str}: {e}"
-                        ) from e
-
-        else:
-            raise RuntimeError(f"Unexpected response: {msg_type}")
-
-    raise RuntimeError(f"Failed to get topic broker: {topic}")
+    return await _follow_redirects(
+        system,
+        lambda mgr: mgr.get_topic(topic=topic),
+        lambda: TopicBroker.resolve(f"_topic_broker_{topic}", system=system),
+        f"topic {topic}",
+        max_redirects,
+    )

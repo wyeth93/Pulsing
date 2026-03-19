@@ -265,10 +265,9 @@ async def test_protocol_call_format():
     )
 
     msg = _wrap_call("test_method", (1, 2), {"key": "value"}, True)
-    assert msg["__pulsing_proto__"] == "1"
-    assert msg["__pulsing__"]["call"] == "test_method"
-    assert msg["__pulsing__"]["async"] is True
-    assert msg["user_data"]["args"] == (1, 2)
+    assert msg["__call__"] == "test_method"
+    assert msg["__async__"] is True
+    assert msg["args"] == (1, 2)
 
     method, args, kwargs, is_async = _unwrap_call(msg)
     assert method == "test_method"
@@ -277,14 +276,13 @@ async def test_protocol_call_format():
     assert is_async is True
 
     resp = _wrap_response(result="success")
-    assert resp["__pulsing_proto__"] == "1"
-    assert resp["__pulsing__"]["result"] == "success"
+    assert resp["__result__"] == "success"
     result, error = _unwrap_response(resp)
     assert result == "success"
     assert error is None
 
     err_resp = _wrap_response(error="failed")
-    assert err_resp["__pulsing__"]["error"] == "failed"
+    assert err_resp["__error__"] == "failed"
     result, error = _unwrap_response(err_resp)
     assert result is None
     assert error == "failed"
@@ -576,6 +574,257 @@ async def test_multiple_delayed_calls():
         events = await actor.get_events()
         assert "first" in events
         assert "second" in events
+    finally:
+        await shutdown()
+
+
+# ============================================================================
+# _WrappedActor.receive: attribute access (non-callable)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_attribute_read_via_protocol():
+    """Test accessing a non-callable attribute returns its value."""
+
+    @remote
+    class AttrActor:
+        def __init__(self):
+            self.name = "alice"
+            self.count = 42
+
+        def get_name(self):
+            return self.name
+
+    await init()
+    try:
+        actor = await AttrActor.spawn()
+        proxy = actor.as_any()
+        result = await proxy.name
+        assert result == "alice"
+        result = await proxy.count
+        assert result == 42
+    finally:
+        await shutdown()
+
+
+# ============================================================================
+# ActorClass.spawn without init raises
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_spawn_without_init_raises():
+    """Calling spawn before init() should raise PulsingRuntimeError."""
+    from pulsing.exceptions import PulsingRuntimeError
+
+    @remote
+    class NeverSpawned:
+        def ping(self):
+            return "pong"
+
+    with pytest.raises(PulsingRuntimeError, match="not initialized"):
+        await NeverSpawned.spawn()
+
+
+# ============================================================================
+# ActorClass.local with name namespace handling
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_local_name_with_namespace():
+    """Name already containing / should be used as-is."""
+
+    @remote
+    class NsActor:
+        def ping(self):
+            return "pong"
+
+    await init()
+    try:
+        actor = await NsActor.spawn(name="custom/my_actor")
+        assert await actor.ping() == "pong"
+    finally:
+        await shutdown()
+
+
+@pytest.mark.asyncio
+async def test_local_without_name():
+    """Spawning without name should auto-generate one."""
+
+    @remote
+    class AutoNameActor:
+        def ping(self):
+            return "pong"
+
+    await init()
+    try:
+        actor = await AutoNameActor.spawn()
+        assert await actor.ping() == "pong"
+    finally:
+        await shutdown()
+
+
+# ============================================================================
+# ActorClass.resolve
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_actor_class_resolve():
+    """Test ActorClass.resolve returns typed proxy."""
+
+    @remote
+    class ResolvableActor:
+        def greet(self):
+            return "hello"
+
+    await init()
+    try:
+        await ResolvableActor.spawn(name="resolvable_test")
+        proxy = await ResolvableActor.resolve("resolvable_test")
+        assert await proxy.greet() == "hello"
+    finally:
+        await shutdown()
+
+
+@pytest.mark.asyncio
+async def test_actor_class_resolve_without_init():
+    """Resolve without init raises PulsingRuntimeError."""
+    from pulsing.exceptions import PulsingRuntimeError
+
+    @remote
+    class NeverResolved:
+        def ping(self):
+            return "pong"
+
+    with pytest.raises(PulsingRuntimeError, match="not initialized"):
+        await NeverResolved.resolve("nonexistent")
+
+
+# ============================================================================
+# ActorClass.proxy wraps existing ref
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_actor_class_resolve_typed():
+    """Test resolving a named actor into a typed proxy."""
+
+    @remote
+    class ProxyTestActor:
+        def double(self, x):
+            return x * 2
+
+    await init()
+    try:
+        await ProxyTestActor.spawn(name="proxy_wrap_test", public=True)
+        typed = await ProxyTestActor.resolve("proxy_wrap_test")
+        assert await typed.double(7) == 14
+    finally:
+        await shutdown()
+
+
+# ============================================================================
+# Method that raises specific exception types
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_method_raises_value_error():
+    """Verify that ValueError from actor method is propagated."""
+
+    @remote
+    class ValidatingActor:
+        def validate(self, x):
+            if x < 0:
+                raise ValueError("must be non-negative")
+            return x
+
+    await init()
+    try:
+        actor = await ValidatingActor.spawn()
+        assert await actor.validate(5) == 5
+        from pulsing.exceptions import PulsingActorError
+
+        with pytest.raises(PulsingActorError, match="non-negative"):
+            await actor.validate(-1)
+    finally:
+        await shutdown()
+
+
+# ============================================================================
+# Async method with direct await (non-streaming)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_async_method_await_returns_value():
+    """Async method awaited directly should return final value."""
+
+    @remote
+    class AsyncValueActor:
+        async def compute(self, x):
+            await asyncio.sleep(0.01)
+            return x**2
+
+    await init()
+    try:
+        actor = await AsyncValueActor.spawn()
+        result = await actor.compute(5)
+        assert result == 25
+    finally:
+        await shutdown()
+
+
+# ============================================================================
+# Actor with supervision (restart_policy)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_supervised_actor_spawn():
+    """Test spawning an actor with supervision parameters."""
+
+    @remote(restart_policy="on-failure", max_restarts=2)
+    class SupervisedActor:
+        def __init__(self):
+            self.value = 0
+
+        def incr(self):
+            self.value += 1
+            return self.value
+
+    await init()
+    try:
+        actor = await SupervisedActor.spawn()
+        assert await actor.incr() == 1
+        assert await actor.incr() == 2
+    finally:
+        await shutdown()
+
+
+# ============================================================================
+# ref.as_any() instance method
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_ref_as_any():
+    """Test the ref.as_any() instance method."""
+
+    @remote
+    class AsAnyActor:
+        def greet(self):
+            return "hi"
+
+    await init()
+    try:
+        actor = await AsAnyActor.spawn(name="as_any_test", public=True)
+        ref = await get_system().resolve("as_any_test")
+        proxy = ref.as_any()
+        assert await proxy.greet() == "hi"
     finally:
         await shutdown()
 

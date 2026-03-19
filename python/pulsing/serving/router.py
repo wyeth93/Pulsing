@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from aiohttp import web
 
 from pulsing.core import ActorId, ActorSystem, get_system, remote
+from pulsing.serving.scheduler import Scheduler  # noqa: F401 (used in type annotation)
 
 
 @dataclass
@@ -54,7 +55,9 @@ class CompletionRequest:
 class _OpenAIHandler:
     """OpenAI-compatible HTTP request handler."""
 
-    def __init__(self, actor_system: ActorSystem, model_name: str, scheduler):
+    def __init__(
+        self, actor_system: ActorSystem, model_name: str, scheduler: Scheduler
+    ):
         self._actor_system = actor_system
         self.model_name = model_name
         self._request_count = 0
@@ -69,21 +72,8 @@ class _OpenAIHandler:
         )
 
     async def health_check(self, request: web.Request) -> web.Response:
-        if hasattr(self._scheduler, "get_worker_count"):
-            count = self._scheduler.get_worker_count()
-            if hasattr(count, "__await__"):
-                total_workers = await count
-            else:
-                total_workers = count
-        else:
-            total_workers = 0
-
-        if hasattr(self._scheduler, "get_healthy_worker_count"):
-            healthy_workers = await self._scheduler.get_healthy_worker_count()
-        elif hasattr(self._scheduler, "get_all_loads"):
-            healthy_workers = len(self._scheduler.get_all_loads())
-        else:
-            healthy_workers = total_workers
+        total_workers = await self._scheduler.get_worker_count()
+        healthy_workers = await self._scheduler.get_healthy_worker_count()
 
         return web.json_response(
             {
@@ -227,6 +217,22 @@ class _OpenAIHandler:
             res_data["choices"][0]["text"] = text
         return web.json_response(res_data)
 
+    def _build_chunk(
+        self, request_id, obj_type, created, model, text, finish_reason, is_chat
+    ) -> dict:
+        choice: dict = {"index": 0, "finish_reason": finish_reason}
+        if is_chat:
+            choice["delta"] = {"content": text} if text else {}
+        else:
+            choice["text"] = text or ""
+        return {
+            "id": request_id,
+            "object": obj_type,
+            "created": created,
+            "model": model or self.model_name,
+            "choices": [choice],
+        }
+
     async def _stream_generate(
         self,
         request: web.Request,
@@ -245,192 +251,111 @@ class _OpenAIHandler:
 
         obj_type = "chat.completion.chunk" if is_chat else "text_completion"
 
+        async def _send(data: dict):
+            await stream_response.write(f"data: {json.dumps(data)}\n\n".encode())
+
         try:
             worker = worker_ref.as_any()
             stream = worker.generate_stream(prompt=prompt, max_new_tokens=max_tokens)
 
             async for chunk in stream:
                 if isinstance(chunk, dict) and chunk.get("error"):
-                    await stream_response.write(
-                        f"data: {json.dumps({'error': chunk['error']})}\n\n".encode()
-                    )
+                    await _send({"error": chunk["error"]})
                     await stream_response.write(b"data: [DONE]\n\n")
                     return stream_response
                 try:
                     finish_reason = chunk.get("finish_reason")
                     text = chunk.get("text", "")
 
-                    # Check if finished
                     if finish_reason:
-                        # Send final chunk (if has text)
                         if text:
-                            data = {
-                                "id": request_id,
-                                "object": obj_type,
-                                "created": created,
-                                "model": model or self.model_name,
-                                "choices": [
-                                    {"index": 0, "finish_reason": finish_reason}
-                                ],
-                            }
-                            if is_chat:
-                                data["choices"][0]["delta"] = {"content": text}
-                            else:
-                                data["choices"][0]["text"] = text
-                            await stream_response.write(
-                                f"data: {json.dumps(data)}\n\n".encode()
+                            await _send(
+                                self._build_chunk(
+                                    request_id,
+                                    obj_type,
+                                    created,
+                                    model,
+                                    text,
+                                    finish_reason,
+                                    is_chat,
+                                )
                             )
                         break
 
-                    # Only send non-empty text
                     if text:
-                        data = {
-                            "id": request_id,
-                            "object": obj_type,
-                            "created": created,
-                            "model": model or self.model_name,
-                            "choices": [{"index": 0, "finish_reason": None}],
-                        }
-                        if is_chat:
-                            data["choices"][0]["delta"] = {"content": text}
-                        else:
-                            data["choices"][0]["text"] = text
-                        await stream_response.write(
-                            f"data: {json.dumps(data)}\n\n".encode()
+                        await _send(
+                            self._build_chunk(
+                                request_id,
+                                obj_type,
+                                created,
+                                model,
+                                text,
+                                None,
+                                is_chat,
+                            )
                         )
                 except json.JSONDecodeError:
                     continue
         except Exception as e:
-            await stream_response.write(
-                f"data: {json.dumps({'error': str(e)})}\n\n".encode()
-            )
+            await _send({"error": str(e)})
 
-        final = {
-            "id": request_id,
-            "object": obj_type,
-            "created": created,
-            "model": model or self.model_name,
-            "choices": [{"index": 0, "finish_reason": "stop"}],
-        }
-        if is_chat:
-            final["choices"][0]["delta"] = {}
-        else:
-            final["choices"][0]["text"] = ""
-        await stream_response.write(f"data: {json.dumps(final)}\n\n".encode())
+        await _send(
+            self._build_chunk(
+                request_id,
+                obj_type,
+                created,
+                model,
+                "",
+                "stop",
+                is_chat,
+            )
+        )
         await stream_response.write(b"data: [DONE]\n\n")
         return stream_response
 
 
-async def start_router(
-    system: ActorSystem,
-    http_host: str = "0.0.0.0",
-    http_port: int = 8080,
-    model_name: str = "pulsing-model",
-    worker_name: str = "worker",
-    scheduler_type: str = "stream_load",
-    scheduler=None,
-    scheduler_class=None,  # Backward compatibility
-) -> web.AppRunner:
-    """Start Router HTTP server, returns AppRunner
-
-    Args:
-        system: ActorSystem instance
-        http_host: HTTP listen address
-        http_port: HTTP listen port
-        model_name: Model name
-        worker_name: Worker actor name
-        scheduler_type: Scheduler type, supports:
-            - "stream_load": Stream load-aware (default, recommended)
-            - "random": Random
-            - "round_robin": Round robin
-            - "power_of_two": Power-of-Two Choices
-            - "cache_aware": Cache-aware
-        scheduler: Custom scheduler instance (takes priority)
-        scheduler_class: [Deprecated] Use scheduler parameter instead
-
-    Returns:
-        AppRunner instance
-    """
-    from .load_stream import StreamLoadScheduler
-    from .scheduler import (
-        RUST_POLICIES_AVAILABLE,
-        RandomScheduler,
-        RoundRobinScheduler,
-        RustCacheAwareScheduler,
-        RustPowerOfTwoScheduler,
-    )
-
-    # Backward compatibility: scheduler_class -> scheduler
-    if scheduler_class is not None and scheduler is None:
-        scheduler = scheduler_class(system, worker_name)
-
-    # Create scheduler
-    if scheduler is None:
-        scheduler_map = {
-            "stream_load": StreamLoadScheduler,
-            "random": RandomScheduler,
-            "round_robin": RoundRobinScheduler,
-        }
-
-        # Rust high-performance schedulers (requires compilation)
-        if RUST_POLICIES_AVAILABLE:
-            scheduler_map["power_of_two"] = RustPowerOfTwoScheduler
-            scheduler_map["cache_aware"] = RustCacheAwareScheduler
-
-        scheduler_class = scheduler_map.get(scheduler_type, StreamLoadScheduler)
-        scheduler = scheduler_class(system, worker_name)
-
-    # Start scheduler (if has start method)
-    if hasattr(scheduler, "start"):
-        await scheduler.start()
-
+def _create_app(system: ActorSystem, model_name: str, scheduler) -> web.Application:
+    """Build the aiohttp Application with OpenAI-compatible routes."""
     handler = _OpenAIHandler(system, model_name, scheduler)
-
     app = web.Application()
     app.router.add_get("/", handler.index)
     app.router.add_get("/health", handler.health_check)
     app.router.add_get("/v1/models", handler.list_models)
     app.router.add_post("/v1/chat/completions", handler.chat_completions)
     app.router.add_post("/v1/completions", handler.completions)
-
-    # Save scheduler reference for cleanup
     app["scheduler"] = scheduler
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, http_host, http_port)
-    await site.start()
-
-    print(f"[Router] HTTP server started at http://{http_host}:{http_port}")
-    print(f"[Router] Using scheduler: {scheduler_type}")
-    return runner
+    return app
 
 
-async def stop_router(runner: web.AppRunner):
-    """Stop Router HTTP server"""
-    if runner:
-        # Stop scheduler (if has stop method)
-        app = runner.app
-        scheduler = app.get("scheduler")
-        if scheduler and hasattr(scheduler, "stop"):
-            await scheduler.stop()
+def _build_scheduler(system: ActorSystem, worker_name: str, scheduler_type: str):
+    """Create a Scheduler instance from scheduler_type string."""
+    from .load_stream import StreamLoadScheduler
+    from .scheduler import get_scheduler
 
-        await runner.cleanup()
-        print("[Router] HTTP server stopped")
+    if scheduler_type == "stream_load":
+        return StreamLoadScheduler(system, worker_name)
+    return get_scheduler(scheduler_type, system, worker_name)
 
 
 @remote
 class Router:
-    """Router - OpenAI 兼容 HTTP API 路由，通过 pulsing.remote 暴露 health_check / get_config。
+    """OpenAI-compatible HTTP API router Actor.
 
-    包装 start_router/stop_router，支持 CLI：pulsing actor pulsing.serving.Router。
+    Starts an HTTP server on ``on_start`` and stops it on ``on_stop``.
+    Exposes ``health_check`` and ``get_config`` as remote-callable methods.
+
+    CLI usage::
+
+        pulsing actor pulsing.serving.Router --addr 0.0.0.0:8000 -- \\
+            --http_port 8080 --model_name my-model
 
     Args:
-        http_host: HTTP 监听地址 (default: "0.0.0.0")
-        http_port: HTTP 监听端口 (default: 8080)
-        model_name: API 响应中的模型名 (default: "pulsing-model")
-        worker_name: 路由目标 worker 名称 (default: "worker")
-        scheduler_type: 调度策略，支持 stream_load / random / round_robin / power_of_two / cache_aware
+        http_host: HTTP listen address (default: "0.0.0.0")
+        http_port: HTTP listen port (default: 8080)
+        model_name: Model name returned in API responses (default: "pulsing-model")
+        worker_name: Worker actor name to route to (default: "worker")
+        scheduler_type: Scheduling policy — stream_load (default) / random /
+            round_robin / power_of_two / cache_aware
     """
 
     def __init__(
@@ -439,7 +364,7 @@ class Router:
         http_port: int = 8080,
         model_name: str = "pulsing-model",
         worker_name: str = "worker",
-        scheduler_type: str = "round_robin",
+        scheduler_type: str = "stream_load",
     ):
         self.http_host = http_host
         self.http_port = http_port
@@ -448,41 +373,39 @@ class Router:
         self.scheduler_type = scheduler_type
 
         self._runner: web.AppRunner | None = None
-        self._actor_id: ActorId | None = None
+        self._scheduler: Scheduler | None = None
 
     async def on_start(self, actor_id: ActorId) -> None:
-        """Start the HTTP server when actor starts"""
-        self._actor_id = actor_id
-
-        # Get global system (set by CLI via init())
         system = get_system()
-
-        # Start HTTP server
-        self._runner = await start_router(
-            system=system,
-            http_host=self.http_host,
-            http_port=self.http_port,
-            model_name=self.model_name,
-            worker_name=self.worker_name,
-            scheduler_type=self.scheduler_type,
+        self._scheduler = _build_scheduler(
+            system, self.worker_name, self.scheduler_type
         )
+        await self._scheduler.start()
 
+        app = _create_app(system, self.model_name, self._scheduler)
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        await web.TCPSite(self._runner, self.http_host, self.http_port).start()
+
+        print(
+            f"[Router] HTTP server started at http://{self.http_host}:{self.http_port}"
+        )
         print(f"[Router] Actor started: {actor_id}")
 
     def on_stop(self) -> None:
-        """Stop the HTTP server when actor stops"""
         if self._runner:
-            # Schedule cleanup in background (on_stop is sync)
-            asyncio.create_task(self._cleanup())
+            asyncio.create_task(self._shutdown())
 
-    async def _cleanup(self):
-        """Async cleanup helper"""
+    async def _shutdown(self) -> None:
+        if self._scheduler:
+            await self._scheduler.stop()
+            self._scheduler = None
         if self._runner:
-            await stop_router(self._runner)
+            await self._runner.cleanup()
             self._runner = None
+            print("[Router] HTTP server stopped")
 
     def metadata(self) -> dict[str, str]:
-        """Return router metadata for diagnostics"""
         return {
             "type": "router",
             "http_host": self.http_host,
@@ -493,7 +416,6 @@ class Router:
         }
 
     def health_check(self) -> dict:
-        """健康检查。"""
         return {
             "status": "healthy",
             "http_port": self.http_port,
@@ -501,7 +423,6 @@ class Router:
         }
 
     def get_config(self) -> dict:
-        """路由配置。"""
         return {
             "http_host": self.http_host,
             "http_port": self.http_port,
@@ -509,3 +430,45 @@ class Router:
             "worker_name": self.worker_name,
             "scheduler_type": self.scheduler_type,
         }
+
+
+async def start_router(
+    system: ActorSystem,
+    http_host: str = "0.0.0.0",
+    http_port: int = 8080,
+    model_name: str = "pulsing-model",
+    worker_name: str = "worker",
+    scheduler_type: str = "stream_load",
+    scheduler=None,
+) -> web.AppRunner:
+    """Start an OpenAI-compatible HTTP server without creating a Router actor.
+
+    Useful for embedding the router in an existing asyncio application.
+    For CLI / Actor-lifecycle usage prefer the ``Router`` actor class instead.
+
+    Returns:
+        ``web.AppRunner`` — pass to ``stop_router()`` for cleanup.
+    """
+    if scheduler is None:
+        scheduler = _build_scheduler(system, worker_name, scheduler_type)
+
+    await scheduler.start()
+
+    app = _create_app(system, model_name, scheduler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, http_host, http_port).start()
+
+    print(f"[Router] HTTP server started at http://{http_host}:{http_port}")
+    return runner
+
+
+async def stop_router(runner: web.AppRunner) -> None:
+    """Stop a router started via ``start_router()``."""
+    if not runner:
+        return
+    scheduler = runner.app.get("scheduler")
+    if scheduler:
+        await scheduler.stop()
+    await runner.cleanup()
+    print("[Router] HTTP server stopped")
