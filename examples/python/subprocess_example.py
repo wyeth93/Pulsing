@@ -27,8 +27,10 @@ PIPE = subprocess.PIPE
 
 
 def run_demos():
+    resource_kwargs = {"resources": {"num_cpus": 2}} if pul else {}
+
     # run() — 等价于 subprocess.run()
-    result = subprocess.run(["echo", "hello"], capture_output=True)
+    result = subprocess.run(["echo", "hello"], capture_output=True, **resource_kwargs)
     print("run()        →", result.stdout.decode().strip())
 
     # check_output() — 等价于 subprocess.check_output()
@@ -36,7 +38,7 @@ def run_demos():
     print("check_output →", hostname.decode().strip())
 
     # Popen + communicate() — stdin 管道传数据
-    proc = subprocess.Popen(["cat"], stdin=PIPE, stdout=PIPE)
+    proc = subprocess.Popen(["cat"], stdin=PIPE, stdout=PIPE, **resource_kwargs)
     stdout, _ = proc.communicate(input=b"pipe test")
     print("Popen        →", stdout.decode().strip())
 
