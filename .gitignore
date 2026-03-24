@@ -102,6 +102,7 @@ TensorRT-LLM
 /.cursor/instructions.md.bak
 /CLAUDE.md
 /CLAUDE.md.bak
+/AGENTS.md
 
 # Benchmarks
 benchmarks/results
