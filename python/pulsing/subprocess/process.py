@@ -100,8 +100,6 @@ class ProcessActor:
     def stdin_write(self, data: bytes | str) -> None:
         if self._proc.stdin is None:
             raise OSError("stdin is not PIPE")
-        if isinstance(data, str):
-            data = data.encode()
         self._proc.stdin.write(data)
 
     def stdin_flush(self) -> None:

@@ -83,6 +83,7 @@ __pycache__/
 *$py.class
 *.so
 *.egg-info
+python/pulsing/lib_core.dylib.dSYM/
 
 # Hatch build artifact
 components/**/_version.py
